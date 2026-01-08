@@ -3,6 +3,8 @@
 .env.*
 *.json
 credentials*.json
+# Allow the specific credentials file for Railway deployment
+!challenge-473307-1aad4c0c18d3.json
 
 # Python
 __pycache__/
