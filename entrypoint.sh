@@ -6,7 +6,8 @@ echo "=== Starting entrypoint script ==="
 # Create credentials file from environment variable if it exists
 if [ -n "$GOOGLE_CREDENTIALS_JSON" ]; then
     echo "Creating credentials file from GOOGLE_CREDENTIALS_JSON..."
-    echo "$GOOGLE_CREDENTIALS_JSON" > /app/Challenge/credentials.json
+    # Use printf to properly handle the JSON string
+    printf '%s' "$GOOGLE_CREDENTIALS_JSON" > /app/Challenge/credentials.json
     export GOOGLE_APPLICATION_CREDENTIALS="/app/Challenge/credentials.json"
     echo "Credentials file created at: $GOOGLE_APPLICATION_CREDENTIALS"
     echo "File size: $(wc -c < /app/Challenge/credentials.json) bytes"
