@@ -246,11 +246,32 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
 
             # Define roles to create: (name, color, reason)
             roles_to_create = [
+                # Status roles
                 ("Challenge Participant", discord.Color.blue(), "For all active challenge participants"),
                 ("Compliant", discord.Color.green(), "Currently meeting daily targets"),
                 ("Non-Compliant", discord.Color.red(), "Not meeting daily targets"),
                 ("Male Group", discord.Color.dark_blue(), "Male participants"),
                 ("Female Group", discord.Color.purple(), "Female participants"),
+
+                # Streak achievement roles
+                ("🔥 7 Day Streak", discord.Color.orange(), "Completed 7 consecutive days"),
+                ("🔥 30 Day Streak", discord.Color.gold(), "Completed 30 consecutive days"),
+                ("🔥 100 Day Streak", discord.Color.from_rgb(255, 215, 0), "Completed 100 consecutive days"),
+
+                # Performance achievement roles
+                ("⭐ Perfect Week", discord.Color.from_rgb(135, 206, 250), "7 consecutive compliant days"),
+                ("⭐ Perfect Month", discord.Color.from_rgb(65, 105, 225), "30 consecutive compliant days"),
+                ("💪 Overachiever", discord.Color.from_rgb(255, 140, 0), "Consistently exceeds targets"),
+
+                # Milestone achievement roles
+                ("🏆 1K Club", discord.Color.from_rgb(192, 192, 192), "1,000 total reps logged"),
+                ("🏆 10K Club", discord.Color.from_rgb(255, 215, 0), "10,000 total reps logged"),
+                ("🏆 100K Club", discord.Color.from_rgb(255, 215, 0), "100,000 total reps logged"),
+
+                # Special achievement roles
+                ("🌟 Early Bird", discord.Color.from_rgb(255, 255, 153), "Logs before 8 AM consistently"),
+                ("🎯 Never Miss", discord.Color.from_rgb(50, 205, 50), "Zero punishments in 30 days"),
+                ("👑 Challenge Champion", discord.Color.from_rgb(218, 165, 32), "Top performer of the month"),
             ]
 
             for role_name, role_color, reason in roles_to_create:
