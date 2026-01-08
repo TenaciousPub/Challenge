@@ -227,6 +227,73 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
         except Exception as e:
             await interaction.response.send_message(f"❌ {e}", ephemeral=True)
 
+    @admin_group.command(name="setup_roles", description="Automatically create standard roles for the challenge bot")
+    async def admin_setup_roles(interaction: discord.Interaction) -> None:
+        if not _is_admin(interaction):
+            await interaction.response.send_message("❌ You need **Manage Server** to run this.", ephemeral=True)
+            return
+
+        if not interaction.guild:
+            await interaction.response.send_message("❌ This command must be used in a server.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            guild = interaction.guild
+            created_roles = []
+            skipped_roles = []
+
+            # Define roles to create: (name, color, reason)
+            roles_to_create = [
+                ("Challenge Participant", discord.Color.blue(), "For all active challenge participants"),
+                ("Compliant", discord.Color.green(), "Currently meeting daily targets"),
+                ("Non-Compliant", discord.Color.red(), "Not meeting daily targets"),
+                ("Male Group", discord.Color.dark_blue(), "Male participants"),
+                ("Female Group", discord.Color.purple(), "Female participants"),
+            ]
+
+            for role_name, role_color, reason in roles_to_create:
+                # Check if role already exists
+                existing_role = discord.utils.get(guild.roles, name=role_name)
+                if existing_role:
+                    skipped_roles.append(role_name)
+                    continue
+
+                # Create the role
+                try:
+                    new_role = await guild.create_role(
+                        name=role_name,
+                        color=role_color,
+                        reason=f"Auto-setup by challenge bot: {reason}",
+                        mentionable=True
+                    )
+                    created_roles.append(role_name)
+                    LOGGER.info(f"Created role: {role_name}")
+                except discord.Forbidden:
+                    await interaction.followup.send("❌ Bot doesn't have permission to create roles. Grant 'Manage Roles' permission.", ephemeral=True)
+                    return
+                except Exception as e:
+                    LOGGER.error(f"Failed to create role {role_name}: {e}")
+                    await interaction.followup.send(f"❌ Failed to create role '{role_name}': {e}", ephemeral=True)
+                    return
+
+            # Build response message
+            response_parts = []
+            if created_roles:
+                response_parts.append(f"✅ **Created {len(created_roles)} role(s):**\n" + "\n".join(f"• {r}" for r in created_roles))
+            if skipped_roles:
+                response_parts.append(f"ℹ️ **Skipped {len(skipped_roles)} existing role(s):**\n" + "\n".join(f"• {r}" for r in skipped_roles))
+
+            if not created_roles and not skipped_roles:
+                response_parts.append("No roles were created.")
+
+            await interaction.followup.send("\n\n".join(response_parts), ephemeral=True)
+
+        except Exception as e:
+            LOGGER.error(f"Error in setup_roles: {e}")
+            await interaction.followup.send(f"❌ An error occurred: {e}", ephemeral=True)
+
     # ---------------- /status ----------------
     @tree.command(name="status", description="Show your status for today (in your timezone)")
     async def status_cmd(interaction: discord.Interaction) -> None:
