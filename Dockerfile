@@ -8,8 +8,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY . .
+# Copy application code into Challenge package directory
+COPY . ./Challenge/
 
 # Run the bot
 CMD ["python", "-m", "Challenge"]
