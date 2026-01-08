@@ -11,5 +11,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code into Challenge package directory
 COPY . ./Challenge/
 
-# Run the bot
-CMD ["python", "-m", "Challenge"]
+# Make entrypoint script executable
+RUN chmod +x /app/Challenge/entrypoint.sh
+
+# Run the bot using entrypoint script
+CMD ["/app/Challenge/entrypoint.sh"]
