@@ -28,10 +28,32 @@ SETTINGS_SHEET = "Settings"
 
 
 def _service_account_credentials(creds_path: str) -> Credentials:
+    import os
+    import json
+    import base64
+
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive.file",
     ]
+
+    # Try to load from GOOGLE_CREDENTIALS_JSON environment variable first
+    creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON", "").strip()
+    if creds_json:
+        try:
+            # Try to parse as JSON directly
+            creds_info = json.loads(creds_json)
+            return Credentials.from_service_account_info(creds_info, scopes=scopes)
+        except json.JSONDecodeError:
+            # Try to decode as base64 first, then parse JSON
+            try:
+                decoded = base64.b64decode(creds_json).decode('utf-8')
+                creds_info = json.loads(decoded)
+                return Credentials.from_service_account_info(creds_info, scopes=scopes)
+            except Exception as e:
+                logging.warning(f"Failed to parse GOOGLE_CREDENTIALS_JSON: {e}")
+
+    # Fallback to file-based credentials
     return Credentials.from_service_account_file(creds_path, scopes=scopes)
 
 

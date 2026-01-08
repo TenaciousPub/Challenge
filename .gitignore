@@ -1,3 +1,27 @@
+# Environment and secrets
 .env
+.env.*
+*.json
+credentials*.json
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
