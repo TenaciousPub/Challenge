@@ -61,9 +61,16 @@ class ComplianceScheduler:
         self._punish_flags: Set[Tuple[str, str]] = set()      # (discord_id, yday_local)
         self._congrats_flags: Set[Tuple[str, str]] = set()    # (discord_id, day_key)
 
+        # Channel posting flags: (channel_tag, "YYYY-MM-DD")
+        self._channel_post_flags: Set[Tuple[str, str]] = set()
+
         self._motivation_time = _parse_hhmm(self.app_config.challenge.motivation_time_local, dtime(18, 0))
         self._reminder_time = _parse_hhmm(self.app_config.challenge.reminder_time_local, dtime(22, 0))
         self._punish_time = _parse_hhmm(self.app_config.challenge.punishment_run_time_local, dtime(0, 5))
+
+        # Channel posting times (server timezone)
+        self._daily_checkin_time = _parse_hhmm(self.app_config.challenge.daily_checkin_time, dtime(6, 0))
+        self._leaderboard_time = _parse_hhmm(self.app_config.challenge.leaderboard_time, dtime(20, 0))
 
         # Gemini
         self.gemini_client = None
@@ -95,7 +102,22 @@ class ComplianceScheduler:
 
     async def _tick_once(self) -> None:
         default_tz = pytz.timezone(self.app_config.challenge.default_timezone)
-        _ = datetime.now(default_tz)  # keep for future global jobs
+        now_server = datetime.now(default_tz).replace(second=0, microsecond=0)
+        today_server = now_server.date()
+        day_key = today_server.isoformat()
+
+        # Channel posting (server timezone)
+        # 1) Daily check-in message
+        if now_server.time() == self._daily_checkin_time:
+            await self._post_daily_checkin(day_key)
+
+        # 2) Daily leaderboard
+        if now_server.time() == self._leaderboard_time:
+            await self._post_daily_leaderboard(day_key)
+
+        # 3) Motivation channel message (post at same time as DMs)
+        if now_server.time() == self._motivation_time:
+            await self._post_motivation_message(day_key)
 
         for p in self.manager.get_participants():
             tz_name = normalize_timezone(p.timezone, default=self.app_config.challenge.default_timezone)
@@ -353,10 +375,13 @@ class ComplianceScheduler:
                 await user.send(
                     "😈 You missed your goal yesterday.\n\n"
                     f"{summary}\n\n"
-                    f"Here’s your punishment workout:\n**{punishment_text}**"
+                    f"Here's your punishment workout:\n**{punishment_text}**"
                 )
         except Exception as e:
             LOGGER.warning("Failed to DM punishment to %s: %s", display_name, e)
+
+        # Post punishment to channel
+        await self._post_punishment_announcement(discord_id, display_name, punishment_text)
 
         # Mark punished (sheet + daily log)
         try:
@@ -369,3 +394,170 @@ class ComplianceScheduler:
             pass
 
         self._punish_flags.add(flag)
+
+    async def _post_daily_checkin(self, day_key: str) -> None:
+        """Post morning check-in message to #daily-checkins"""
+        flag = ("daily_checkin", day_key)
+        if flag in self._channel_post_flags:
+            return
+
+        channel_id = self.app_config.bot.daily_checkins_channel_id
+        if not channel_id:
+            return
+
+        try:
+            channel = self.bot.get_channel(channel_id)
+            if not channel:
+                return
+
+            # Get today's targets for participants
+            participants = self.manager.get_participants()
+            if not participants:
+                message = "☀️ **Good morning!** Time to crush your goals today!"
+            else:
+                message = (
+                    "☀️ **Good morning, challengers!**\n\n"
+                    "Time to log your progress! Use `/log` to record your work.\n\n"
+                    "💪 Let's make today count!"
+                )
+
+            await channel.send(message)
+            self._channel_post_flags.add(flag)
+            LOGGER.info("Posted daily check-in to channel %s", channel_id)
+        except Exception as e:
+            LOGGER.warning("Failed to post daily check-in: %s", e)
+            self._channel_post_flags.add(flag)
+
+    async def _post_daily_leaderboard(self, day_key: str) -> None:
+        """Post daily leaderboard to #leaderboards"""
+        flag = ("leaderboard", day_key)
+        if flag in self._channel_post_flags:
+            return
+
+        channel_id = self.app_config.bot.leaderboards_channel_id
+        if not channel_id:
+            return
+
+        try:
+            channel = self.bot.get_channel(channel_id)
+            if not channel:
+                return
+
+            # Get today's date and calculate compliance
+            today = datetime.now(pytz.timezone(self.app_config.challenge.default_timezone)).date()
+            compliance_data = self.manager.evaluate_multi_compliance(today)
+
+            # Build leaderboard
+            participants = []
+            for discord_id, status in compliance_data.items():
+                p = self.manager.get_participant_by_id(discord_id)
+                if p:
+                    participants.append({
+                        'name': p.display_name,
+                        'compliant': bool(status.get('compliant')),
+                        'progress': status.get('summary', ''),
+                    })
+
+            # Sort by compliance, then name
+            participants.sort(key=lambda x: (not x['compliant'], x['name']))
+
+            # Build message
+            compliant_count = sum(1 for p in participants if p['compliant'])
+            total_count = len(participants)
+
+            message_lines = [
+                f"🏆 **Daily Leaderboard** — {today.strftime('%B %d, %Y')}",
+                f"**{compliant_count}/{total_count}** participants are compliant today!\n"
+            ]
+
+            if compliant_count > 0:
+                message_lines.append("✅ **Compliant:**")
+                for p in participants:
+                    if p['compliant']:
+                        message_lines.append(f"• {p['name']}")
+
+            non_compliant = [p for p in participants if not p['compliant']]
+            if non_compliant:
+                message_lines.append("\n❌ **Not Yet Compliant:**")
+                for p in non_compliant:
+                    message_lines.append(f"• {p['name']}")
+
+            message = "\n".join(message_lines)
+            await channel.send(message)
+            self._channel_post_flags.add(flag)
+            LOGGER.info("Posted daily leaderboard to channel %s", channel_id)
+        except Exception as e:
+            LOGGER.warning("Failed to post daily leaderboard: %s", e)
+            self._channel_post_flags.add(flag)
+
+    async def _post_motivation_message(self, day_key: str) -> None:
+        """Post motivational message to #motivation channel"""
+        flag = ("motivation", day_key)
+        if flag in self._channel_post_flags:
+            return
+
+        channel_id = self.app_config.bot.motivation_channel_id
+        if not channel_id:
+            return
+
+        try:
+            channel = self.bot.get_channel(channel_id)
+            if not channel:
+                return
+
+            # Try to get AI-generated message
+            text = None
+            if self.gemini_client:
+                try:
+                    resp = await asyncio.to_thread(
+                        self.gemini_client.models.generate_content,
+                        model='gemini-2.0-flash-exp',
+                        contents="You are a supportive fitness coach. Write a short (2-3 sentences) motivational message to inspire people doing a daily fitness challenge. Make it uplifting and energizing."
+                    )
+                    text = (resp.text or "").strip()
+                except Exception as e:
+                    LOGGER.debug("Gemini motivation failed: %s", e)
+
+            if not text:
+                messages = [
+                    "💪 Every rep counts, every day matters. You're building something great!",
+                    "🔥 The only bad workout is the one you didn't do. Let's make today count!",
+                    "⚡ You're stronger than you think. Push through and prove it to yourself!",
+                    "🎯 Progress isn't about perfection, it's about consistency. Keep showing up!",
+                    "💯 Champions aren't made in the gym. They're made from determination that refuses to quit!",
+                ]
+                text = random.choice(messages)
+
+            await channel.send(f"💪 **Daily Motivation**\n\n{text}")
+            self._channel_post_flags.add(flag)
+            LOGGER.info("Posted motivation message to channel %s", channel_id)
+        except Exception as e:
+            LOGGER.warning("Failed to post motivation message: %s", e)
+            self._channel_post_flags.add(flag)
+
+    async def _post_punishment_announcement(self, discord_id: str, display_name: str, punishment_text: str) -> None:
+        """Post punishment announcement to #punishment-wo... channel"""
+        channel_id = self.app_config.bot.punishment_channel_id
+        if not channel_id:
+            return
+
+        try:
+            channel = self.bot.get_channel(channel_id)
+            if not channel:
+                return
+
+            # Try to get the member to mention them
+            guild = self.bot.get_guild(self.app_config.bot.guild_id) if self.app_config.bot.guild_id else None
+            mention = f"<@{discord_id}>"
+
+            message = (
+                f"😈 **Punishment Assigned**\n\n"
+                f"{mention} missed their goal yesterday.\n\n"
+                f"**Punishment Workout:**\n{punishment_text}\n\n"
+                f"💪 Time to make up for it!"
+            )
+
+            await channel.send(message)
+            LOGGER.info("Posted punishment announcement for %s to channel %s", display_name, channel_id)
+        except Exception as e:
+            LOGGER.warning("Failed to post punishment announcement: %s", e)
