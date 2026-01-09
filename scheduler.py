@@ -2,16 +2,33 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import random
 from datetime import datetime, date, time as dtime, timedelta
 from typing import Optional, Set, Tuple
 
 import pytz
 
+try:
+    from google import genai  # type: ignore
+except Exception:  # pragma: no cover
+    genai = None
+
 from .timezones import normalize_timezone
 from .role_sync import sync_compliance_roles
 
 LOGGER = logging.getLogger(__name__)
+
+MOTIVATION_PROMPT = (
+    "You are a supportive workout coach. Write a short (1–2 sentences), "
+    "positive and encouraging message to motivate someone doing a daily challenge. "
+    "Each time, make it slightly different."
+)
+
+CONGRATS_PROMPT = (
+    "You are a supportive coach. Write a short (1–2 sentences) congratulations DM "
+    "for completing today's goal. Keep it upbeat and not cheesy."
+)
 
 
 def _parse_hhmm(value: str, fallback: dtime) -> dtime:
@@ -47,6 +64,20 @@ class ComplianceScheduler:
         self._motivation_time = _parse_hhmm(self.app_config.challenge.motivation_time_local, dtime(18, 0))
         self._reminder_time = _parse_hhmm(self.app_config.challenge.reminder_time_local, dtime(22, 0))
         self._punish_time = _parse_hhmm(self.app_config.challenge.punishment_run_time_local, dtime(0, 5))
+
+        # Gemini
+        self.gemini_client = None
+        api_key = os.getenv("GEMINI_API_KEY", "").strip()
+        if not api_key:
+            LOGGER.warning("❌ GEMINI_API_KEY not set; Gemini DMs will use fallbacks")
+        elif not genai:
+            LOGGER.warning("❌ google-genai not installed; Gemini DMs will use fallbacks")
+        else:
+            try:
+                self.gemini_client = genai.Client(api_key=api_key)
+                LOGGER.info("✅ Gemini configured successfully for DMs")
+            except Exception as e:
+                LOGGER.warning("❌ Failed to configure Gemini: %s", e)
 
     def start(self) -> None:
         if self.task is None:
@@ -138,7 +169,20 @@ class ComplianceScheduler:
             except Exception as e:
                 LOGGER.debug("Reminder log check failed for %s: %s", display_name, e)
 
-        text = "Keep going—you've got this!"
+        text = None
+        if self.gemini_client:
+            try:
+                resp = await asyncio.to_thread(
+                    self.gemini_client.models.generate_content,
+                    model='gemini-2.0-flash-exp',
+                    contents=MOTIVATION_PROMPT
+                )
+                text = (resp.text or "").strip()
+            except Exception as e:
+                LOGGER.debug("Gemini motivation failed: %s", e)
+
+        if not text:
+            text = "Keep going—you've got this!"
 
         try:
             user = self.bot.get_user(int(discord_id))
@@ -192,7 +236,20 @@ class ComplianceScheduler:
             except Exception as e:
                 LOGGER.warning(f"Failed to sync compliance roles for {discord_id}: {e}")
 
-        text = "Nice work—goal hit for today. Keep that streak alive!"
+        text = None
+        if self.gemini_client:
+            try:
+                resp = await asyncio.to_thread(
+                    self.gemini_client.models.generate_content,
+                    model='gemini-2.0-flash-exp',
+                    contents=CONGRATS_PROMPT
+                )
+                text = (resp.text or "").strip()
+            except Exception as e:
+                LOGGER.debug("Gemini congrats failed: %s", e)
+
+        if not text:
+            text = "Nice work—goal hit for today. Keep that streak alive!"
 
         try:
             user = self.bot.get_user(int(discord_id))
