@@ -85,6 +85,10 @@ class ComplianceScheduler:
         self._gemini_last_call = 0.0  # Track last API call time
         self._gemini_min_interval = 2.0  # Minimum 2 seconds between calls
 
+        # Compliance cache to prevent excessive Google Sheets API reads
+        self._compliance_cache = {}  # {day_key: {compliance_data, timestamp}}
+        self._compliance_cache_ttl = 300  # 5 minutes cache
+
         api_key = os.getenv("GEMINI_API_KEY", "").strip()
         if not api_key:
             LOGGER.warning("❌ GEMINI_API_KEY not set; Gemini DMs will use fallbacks")
@@ -96,6 +100,36 @@ class ComplianceScheduler:
                 LOGGER.info("✅ Gemini configured successfully for DMs")
             except Exception as e:
                 LOGGER.warning("❌ Failed to configure Gemini: %s", e)
+
+    def _get_cached_compliance(self, day: date):
+        """Get cached compliance data or fetch and cache if expired"""
+        import time
+        day_key = day.isoformat()
+        now = time.time()
+
+        # Check cache
+        if day_key in self._compliance_cache:
+            cache_entry = self._compliance_cache[day_key]
+            if now - cache_entry['timestamp'] < self._compliance_cache_ttl:
+                LOGGER.debug(f"Using cached compliance data for {day_key}")
+                return cache_entry['data']
+
+        # Cache miss or expired - fetch new data
+        try:
+            LOGGER.info(f"Fetching compliance data for {day_key} (cache miss)")
+            data = self.manager.evaluate_multi_compliance(day)
+            self._compliance_cache[day_key] = {
+                'data': data,
+                'timestamp': now
+            }
+            # Clean old cache entries (keep only last 3 days)
+            old_keys = [k for k in self._compliance_cache.keys() if k < (day - timedelta(days=3)).isoformat()]
+            for k in old_keys:
+                del self._compliance_cache[k]
+            return data
+        except Exception as e:
+            LOGGER.error(f"Failed to fetch compliance data: {e}")
+            return {}
 
     async def _call_gemini_with_rate_limit(self, prompt: str) -> Optional[str]:
         """Call Gemini API with rate limiting to avoid 429 errors"""
@@ -270,21 +304,12 @@ class ComplianceScheduler:
         except Exception:
             pass
 
-        # Check compliance (with timeout to prevent blocking)
+        # Check compliance using cache to prevent excessive API calls
         try:
-            # Use asyncio.wait_for with timeout to prevent long-running API calls from blocking
-            async def check_compliance():
-                return self.manager.evaluate_multi_compliance(local_day).get(str(discord_id))
-
-            status = await asyncio.wait_for(
-                asyncio.to_thread(lambda: self.manager.evaluate_multi_compliance(local_day).get(str(discord_id))),
-                timeout=10.0  # 10 second timeout
-            )
+            compliance_data = await asyncio.to_thread(self._get_cached_compliance, local_day)
+            status = compliance_data.get(str(discord_id))
             if not status or not bool(status.get("compliant")):
                 return
-        except asyncio.TimeoutError:
-            LOGGER.warning(f"Compliance check timed out for {display_name}")
-            return
         except Exception as e:
             LOGGER.debug(f"Compliance check failed for {display_name}: {e}")
             return
@@ -492,9 +517,9 @@ class ComplianceScheduler:
             if not channel:
                 return
 
-            # Get today's date and calculate compliance
+            # Get today's date and calculate compliance (using cache)
             today = datetime.now(pytz.timezone(self.app_config.challenge.default_timezone)).date()
-            compliance_data = self.manager.evaluate_multi_compliance(today)
+            compliance_data = self._get_cached_compliance(today)
 
             # Build leaderboard
             participants = []
