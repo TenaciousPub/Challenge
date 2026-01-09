@@ -258,8 +258,19 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
         try:
             mode = manager.compliance_mode()
             pts = manager.points_target()
+
+            mode_explanations = {
+                "strict": "**strict** - Must complete ALL active challenges daily",
+                "lenient": "**lenient** - Must complete ANY ONE active challenge daily",
+                "points": "**points** - Earn 1 point per challenge; must reach points target"
+            }
+
+            explanation = mode_explanations.get(mode, "Unknown mode")
+
             await interaction.followup.send(
-                f"Mode: **{mode}**\nPoints target (only matters in points mode): **{pts}**",
+                f"**Current Mode:** `{mode}`\n"
+                f"{explanation}\n\n"
+                f"**Points Target:** `{pts}` (only used in points mode)",
                 ephemeral=True,
             )
         except Exception as e:
@@ -374,31 +385,57 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
                 await interaction.followup.send("❌ Couldn't compute status right now.", ephemeral=True)
                 return
 
+            # Build visual progress bar
+            def make_progress_bar(current: int, target: int, length: int = 10) -> str:
+                if target <= 0:
+                    return "█" * length
+                filled = int((current / target) * length)
+                filled = min(filled, length)
+                bar = "█" * filled + "░" * (length - filled)
+                return bar
+
             if st.get("mode") == "legacy":
                 met = (st.get("met") or [{}])[0]
+                done = met.get('done', 0)
+                target = met.get('target', 1)
+                progress_bar = make_progress_bar(done, target)
+                compliant = st.get('compliant')
+                status_emoji = "✅" if compliant else "❌"
+
                 msg = (
-                    f"Today: **{today.isoformat()}**\n"
-                    f"Done: **{met.get('done')}** / Target: **{met.get('target')} reps**\n"
-                    f"Compliant: **{st.get('compliant')}**"
+                    f"**Today:** `{today.isoformat()}`\n"
+                    f"**Mode:** `legacy`\n"
+                    f"**Progress:** `{done} / {target}` reps\n"
+                    f"`{progress_bar}` {int((done/target)*100) if target > 0 else 0}%\n"
+                    f"**Compliant:** {status_emoji} **{compliant}**\n"
+                    f"**Missing:**\n" + ("None 🎉" if compliant else "Need more reps!")
                 )
                 await interaction.followup.send(msg, ephemeral=True)
                 return
 
             mode = st.get("mode")
-            points = st.get("points")
-            target = st.get("points_target")
+            points = st.get("points", 0)
+            target = st.get("points_target", 1)
+            progress_bar = make_progress_bar(points, target)
+            compliant = st.get('compliant')
+            status_emoji = "✅" if compliant else "❌"
+
             missing = st.get("missing") or []
-            miss_lines = []
-            for m in missing[:5]:
-                miss_lines.append(f"• {m.get('type')} — need {m.get('need')} {m.get('unit')} (`{m.get('challenge_id')}`)")
-            miss_text = "\n".join(miss_lines) if miss_lines else "None 🎉"
+            if missing:
+                miss_lines = []
+                for m in missing[:5]:
+                    miss_lines.append(f"• {m.get('type')} — need {m.get('need')} {m.get('unit')} (`{m.get('challenge_id')}`)")
+                miss_text = "\n".join(miss_lines)
+            else:
+                miss_text = "None 🎉"
 
             await interaction.followup.send(
-                f"Today: **{today.isoformat()}**\n"
-                f"Mode: **{mode}**\n"
-                f"Progress: **{points} / {target}**\n"
-                f"Compliant: **{st.get('compliant')}**\n"
-                f"Missing:\n{miss_text}",
+                f"**Today:** `{today.isoformat()}`\n"
+                f"**Mode:** `{mode}`\n"
+                f"**Progress:** `{points} / {target}`\n"
+                f"`{progress_bar}` {int((points/target)*100) if target > 0 else 0}%\n"
+                f"**Compliant:** {status_emoji} **{compliant}**\n"
+                f"**Missing:**\n{miss_text}",
                 ephemeral=True,
             )
         except Exception as e:

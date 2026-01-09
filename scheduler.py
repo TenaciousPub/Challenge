@@ -154,7 +154,12 @@ class ComplianceScheduler:
         if now_server.time() == self._motivation_time:
             await self._post_motivation_message(day_key)
 
-        for p in self.manager.get_participants():
+        participants = self.manager.get_participants()
+        for idx, p in enumerate(participants):
+            # Yield control every 3 participants to prevent event loop blocking
+            if idx > 0 and idx % 3 == 0:
+                await asyncio.sleep(0)
+
             tz_name = normalize_timezone(p.timezone, default=self.app_config.challenge.default_timezone)
             tz = pytz.timezone(tz_name)
             now_local = datetime.now(tz).replace(second=0, microsecond=0)
@@ -196,12 +201,14 @@ class ComplianceScheduler:
                     always=False,
                 )
 
-            # 4) Congrats DM (send once when compliant)
-            await self._maybe_send_congrats_if_completed(
-                discord_id=p.discord_id,
-                display_name=p.display_name,
-                local_day=today_local,
-            )
+            # 4) Congrats DM (check only every 5 minutes to avoid blocking event loop)
+            # Check on :00, :05, :10, :15, :20, :25, :30, :35, :40, :45, :50, :55
+            if now_local.minute % 5 == 0:
+                await self._maybe_send_congrats_if_completed(
+                    discord_id=p.discord_id,
+                    display_name=p.display_name,
+                    local_day=today_local,
+                )
 
     async def _maybe_send_motivation(
         self,
@@ -263,12 +270,23 @@ class ComplianceScheduler:
         except Exception:
             pass
 
-        # Check compliance
+        # Check compliance (with timeout to prevent blocking)
         try:
-            status = self.manager.evaluate_multi_compliance(local_day).get(str(discord_id))
+            # Use asyncio.wait_for with timeout to prevent long-running API calls from blocking
+            async def check_compliance():
+                return self.manager.evaluate_multi_compliance(local_day).get(str(discord_id))
+
+            status = await asyncio.wait_for(
+                asyncio.to_thread(lambda: self.manager.evaluate_multi_compliance(local_day).get(str(discord_id))),
+                timeout=10.0  # 10 second timeout
+            )
             if not status or not bool(status.get("compliant")):
                 return
-        except Exception:
+        except asyncio.TimeoutError:
+            LOGGER.warning(f"Compliance check timed out for {display_name}")
+            return
+        except Exception as e:
+            LOGGER.debug(f"Compliance check failed for {display_name}: {e}")
             return
 
         # Sync compliance roles
