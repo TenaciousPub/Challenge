@@ -1,6 +1,7 @@
 # Environment and secrets
 .env
 .env.*
+!.env.example
 *.json
 credentials*.json
 # Allow the specific credentials file for Railway deployment
