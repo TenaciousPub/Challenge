@@ -73,7 +73,7 @@ def load_config() -> AppConfig:
     creds_path = (
         os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
         or os.getenv("CREDENTIALS_PATH", "").strip()
-        or "/app/Challenge/credentials.json"  # Default for Docker deployment
+        or "/tmp/google-sa.json"  # Default for Docker deployment
     )
     if not creds_path:
         raise RuntimeError("Missing GOOGLE_APPLICATION_CREDENTIALS (service account json path)")
