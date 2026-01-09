@@ -25,6 +25,12 @@ MOTIVATION_PROMPT = (
     "Each time, make it slightly different."
 )
 
+TEAM_MOTIVATION_PROMPT = (
+    "You are a supportive fitness coach addressing an entire team. Write a short (2-3 sentences) "
+    "motivational message to inspire a group of people working together on a daily fitness challenge. "
+    "Focus on team spirit, collective effort, and group accountability. Make it uplifting and energizing."
+)
+
 CONGRATS_PROMPT = (
     "You are a supportive coach. Write a short (1–2 sentences) congratulations DM "
     "for completing today's goal. Keep it upbeat and not cheesy."
@@ -505,26 +511,29 @@ class ComplianceScheduler:
             if not channel:
                 return
 
-            # Try to get AI-generated message
+            # Try to get AI-generated team motivation message
             text = None
             if self.gemini_client:
                 try:
                     resp = await asyncio.to_thread(
                         self.gemini_client.models.generate_content,
                         model='gemini-2.0-flash-exp',
-                        contents="You are a supportive fitness coach. Write a short (2-3 sentences) motivational message to inspire people doing a daily fitness challenge. Make it uplifting and energizing."
+                        contents=TEAM_MOTIVATION_PROMPT
                     )
                     text = (resp.text or "").strip()
                 except Exception as e:
-                    LOGGER.debug("Gemini motivation failed: %s", e)
+                    LOGGER.debug("Gemini team motivation failed: %s", e)
 
             if not text:
                 messages = [
-                    "💪 Every rep counts, every day matters. You're building something great!",
-                    "🔥 The only bad workout is the one you didn't do. Let's make today count!",
-                    "⚡ You're stronger than you think. Push through and prove it to yourself!",
-                    "🎯 Progress isn't about perfection, it's about consistency. Keep showing up!",
-                    "💯 Champions aren't made in the gym. They're made from determination that refuses to quit!",
+                    "💪 Together we're stronger! Every person who shows up today makes our team better. Let's push each other to greatness!",
+                    "🔥 This team doesn't quit! We're all in this together—let's make today count as a unit!",
+                    "⚡ When one of us wins, we all win. Support each other, hold each other accountable, and let's crush these goals together!",
+                    "🎯 Great teams are built one rep at a time. Show up for yourself, show up for the team. We've got this!",
+                    "💯 The strength of the team is each individual member. The strength of each member is the team. Let's make today legendary!",
+                    "🏆 Accountability + Support = Unstoppable. That's who we are. Let's prove it today, challengers!",
+                    "🚀 We're not just individuals working out—we're a squad pushing limits together. Time to show what we're made of!",
+                    "💥 Your effort inspires others. Others' dedication fuels you. That's the power of this team. Let's go!",
                 ]
                 text = random.choice(messages)
 
