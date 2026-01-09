@@ -91,10 +91,13 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
         workout_bonus: Optional[int] = None,
         notes: Optional[str] = None,
     ) -> None:
+        # Defer immediately to prevent interaction timeout
+        await interaction.response.defer(ephemeral=True)
+
         try:
             p = manager.get_participant(str(interaction.user.id))
             if not p:
-                await interaction.response.send_message("❌ You’re not in the challenge yet. Use **/join** first.", ephemeral=True)
+                await interaction.followup.send("❌ You're not in the challenge yet. Use **/join** first.", ephemeral=True)
                 return
 
             tz_name = normalize_timezone(p.timezone, default=app_config.challenge.default_timezone)
@@ -119,22 +122,16 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
                 notes=notes,
             )
 
-            # Sync compliance roles if logging for today
-            if d == datetime.now(tz).date() and interaction.guild and isinstance(interaction.user, discord.Member):
-                try:
-                    status = manager.evaluate_multi_compliance(d).get(p.discord_id, {})
-                    is_compliant = bool(status.get("compliant", False))
-                    await sync_compliance_roles(interaction.user, is_compliant)
-                except Exception as e:
-                    LOGGER.warning(f"Failed to sync roles after log: {e}")
+            # Note: Role syncing is handled by the scheduler when checking compliance
+            # to avoid excessive Google Sheets API reads during high-traffic periods
 
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"✅ Logged **{amount}** for **{d.isoformat()}**"
                 + (f" (challenge: `{cid}`)" if cid else " (legacy log)"),
                 ephemeral=True,
             )
         except Exception as e:
-            await interaction.response.send_message(f"❌ {e}", ephemeral=True)
+            await interaction.followup.send(f"❌ {e}", ephemeral=True)
 
     # ---------------- /challenge (group) ----------------
     challenge_group = app_commands.Group(name="challenge", description="Manage your daily challenge(s)")
