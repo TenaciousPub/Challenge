@@ -503,7 +503,7 @@ class ComplianceScheduler:
             self._channel_post_flags.add(flag)
 
     async def _post_daily_leaderboard(self, day_key: str) -> None:
-        """Post daily leaderboard to #leaderboards"""
+        """Post daily leaderboard with embed to #leaderboards"""
         flag = ("leaderboard", day_key)
         if flag in self._channel_post_flags:
             return
@@ -521,45 +521,114 @@ class ComplianceScheduler:
             today = datetime.now(pytz.timezone(self.app_config.challenge.default_timezone)).date()
             compliance_data = self._get_cached_compliance(today)
 
-            # Build leaderboard
-            participants = []
+            # Build daily leaderboard - ONLY count valid participants
+            daily_participants = []
             for discord_id, status in compliance_data.items():
                 p = self.manager.get_participant_by_id(discord_id)
-                if p:
-                    participants.append({
+                if p:  # Only include if participant exists
+                    daily_participants.append({
+                        'discord_id': discord_id,
                         'name': p.display_name,
                         'compliant': bool(status.get('compliant')),
                         'progress': status.get('summary', ''),
                     })
 
-            # Sort by compliance, then name
-            participants.sort(key=lambda x: (not x['compliant'], x['name']))
+            # Sort by compliance (compliant first), then alphabetically
+            daily_participants.sort(key=lambda x: (not x['compliant'], x['name']))
 
-            # Build message
-            compliant_count = sum(1 for p in participants if p['compliant'])
-            total_count = len(participants)
+            # Calculate stats
+            compliant_count = sum(1 for p in daily_participants if p['compliant'])
+            total_count = len(daily_participants)
+            compliance_rate = int((compliant_count / total_count * 100)) if total_count > 0 else 0
 
-            message_lines = [
-                f"🏆 **Daily Leaderboard** — {today.strftime('%B %d, %Y')}",
-                f"**{compliant_count}/{total_count}** participants are compliant today!\n"
-            ]
+            # Build global leaderboard (all-time stats)
+            all_participants = self.manager.get_participants()
+            global_participants = []
+            for p in all_participants:
+                try:
+                    # Get total compliant days (you can expand this with more stats)
+                    # For now, just show participants
+                    global_participants.append({
+                        'name': p.display_name,
+                        'timezone': p.timezone,
+                    })
+                except Exception:
+                    continue
 
+            # Create Discord embed with flair
+            embed = discord.Embed(
+                title="🏆 Daily Challenge Leaderboard",
+                description=f"**{today.strftime('%A, %B %d, %Y')}**",
+                color=discord.Color.gold()
+            )
+
+            # Daily Stats Field
+            stats_emoji = "🔥" if compliance_rate >= 80 else "💪" if compliance_rate >= 50 else "📊"
+            embed.add_field(
+                name=f"{stats_emoji} Today's Performance",
+                value=(
+                    f"**{compliant_count}/{total_count}** compliant "
+                    f"({compliance_rate}%)\n"
+                    f"{'━' * 20}"
+                ),
+                inline=False
+            )
+
+            # Compliant participants
             if compliant_count > 0:
-                message_lines.append("✅ **Compliant:**")
-                for p in participants:
-                    if p['compliant']:
-                        message_lines.append(f"• {p['name']}")
+                compliant_names = [
+                    f"✅ **{p['name']}**"
+                    for p in daily_participants
+                    if p['compliant']
+                ]
+                compliant_text = "\n".join(compliant_names[:15])  # Limit to 15 to fit
+                if len(compliant_names) > 15:
+                    compliant_text += f"\n... and {len(compliant_names) - 15} more"
 
-            non_compliant = [p for p in participants if not p['compliant']]
+                embed.add_field(
+                    name="✅ Crushing It Today",
+                    value=compliant_text,
+                    inline=True
+                )
+
+            # Non-compliant participants
+            non_compliant = [p for p in daily_participants if not p['compliant']]
             if non_compliant:
-                message_lines.append("\n❌ **Not Yet Compliant:**")
-                for p in non_compliant:
-                    message_lines.append(f"• {p['name']}")
+                non_compliant_names = [f"❌ {p['name']}" for p in non_compliant[:15]]
+                non_compliant_text = "\n".join(non_compliant_names)
+                if len(non_compliant) > 15:
+                    non_compliant_text += f"\n... and {len(non_compliant) - 15} more"
 
-            message = "\n".join(message_lines)
-            await channel.send(message)
+                embed.add_field(
+                    name="⏰ Still Time Left",
+                    value=non_compliant_text,
+                    inline=True
+                )
+
+            # Global Stats Field
+            embed.add_field(
+                name="🌍 Challenge Stats",
+                value=(
+                    f"**Total Participants:** {len(global_participants)}\n"
+                    f"**Active Today:** {total_count}\n"
+                    f"Use `/status` to check your progress!"
+                ),
+                inline=False
+            )
+
+            # Footer with motivational message
+            footer_messages = [
+                "Every rep counts! Keep pushing! 💪",
+                "Consistency beats perfection! 🔥",
+                "The only bad workout is the one you didn't do! ⚡",
+                "You're building something great! 🎯",
+                "Small daily improvements = Big results! 🚀",
+            ]
+            embed.set_footer(text=random.choice(footer_messages))
+
+            await channel.send(embed=embed)
             self._channel_post_flags.add(flag)
-            LOGGER.info("Posted daily leaderboard to channel %s", channel_id)
+            LOGGER.info("Posted daily leaderboard embed to channel %s", channel_id)
         except Exception as e:
             LOGGER.warning("Failed to post daily leaderboard: %s", e)
             self._channel_post_flags.add(flag)
