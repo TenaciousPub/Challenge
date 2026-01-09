@@ -386,9 +386,11 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
             try:
                 from .scheduler import MOTIVATION_PROMPT
                 scheduler = bot.scheduler  # Access the scheduler instance
+                text = None
                 if scheduler and scheduler.gemini_client:
                     text = await scheduler._call_gemini_with_rate_limit(MOTIVATION_PROMPT)
-                else:
+
+                if not text:
                     text = "Keep going—you've got this!"
 
                 await interaction.user.send(f"💪 **Test Motivation DM:**\n{text}")
@@ -398,17 +400,23 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
 
             # Test 2: Team motivation to channel
             try:
-                scheduler = bot.scheduler
-                await scheduler._post_motivation_message(f"{day_key}-test")
-                results.append("✅ Posted team motivation to #motivation")
+                if not app_config.bot.motivation_channel_id:
+                    results.append("❌ Team motivation: MOTIVATION_CHANNEL_ID not configured in Railway")
+                else:
+                    scheduler = bot.scheduler
+                    await scheduler._post_motivation_message(f"{day_key}-test")
+                    results.append("✅ Posted team motivation to #motivation")
             except Exception as e:
                 results.append(f"❌ Team motivation failed: {e}")
 
             # Test 3: Leaderboard to channel
             try:
-                scheduler = bot.scheduler
-                await scheduler._post_daily_leaderboard(f"{day_key}-test")
-                results.append("✅ Posted leaderboard to #leaderboards")
+                if not app_config.bot.leaderboards_channel_id:
+                    results.append("❌ Leaderboard: LEADERBOARDS_CHANNEL_ID not configured in Railway")
+                else:
+                    scheduler = bot.scheduler
+                    await scheduler._post_daily_leaderboard(f"{day_key}-test")
+                    results.append("✅ Posted leaderboard to #leaderboards")
             except Exception as e:
                 results.append(f"❌ Leaderboard failed: {e}")
 
