@@ -364,6 +364,62 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
             LOGGER.error(f"Error in setup_roles: {e}")
             await interaction.followup.send(f"❌ An error occurred: {e}", ephemeral=True)
 
+    @admin_group.command(name="test_posts", description="Test motivation DM, team motivation, and leaderboard immediately")
+    async def admin_test_posts(interaction: discord.Interaction) -> None:
+        if not _is_admin(interaction):
+            await interaction.followup.send("❌ You need **Manage Server** to run this.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            # Get today's date key
+            from datetime import datetime
+            import pytz
+            default_tz = pytz.timezone(app_config.challenge.default_timezone)
+            today = datetime.now(default_tz).date()
+            day_key = today.isoformat()
+
+            results = []
+
+            # Test 1: Personal motivation DM to the user who ran the command
+            try:
+                from .scheduler import MOTIVATION_PROMPT
+                scheduler = bot.scheduler  # Access the scheduler instance
+                if scheduler and scheduler.gemini_client:
+                    text = await scheduler._call_gemini_with_rate_limit(MOTIVATION_PROMPT)
+                else:
+                    text = "Keep going—you've got this!"
+
+                await interaction.user.send(f"💪 **Test Motivation DM:**\n{text}")
+                results.append("✅ Sent motivation DM to you")
+            except Exception as e:
+                results.append(f"❌ Motivation DM failed: {e}")
+
+            # Test 2: Team motivation to channel
+            try:
+                scheduler = bot.scheduler
+                await scheduler._post_motivation_message(f"{day_key}-test")
+                results.append("✅ Posted team motivation to #motivation")
+            except Exception as e:
+                results.append(f"❌ Team motivation failed: {e}")
+
+            # Test 3: Leaderboard to channel
+            try:
+                scheduler = bot.scheduler
+                await scheduler._post_daily_leaderboard(f"{day_key}-test")
+                results.append("✅ Posted leaderboard to #leaderboards")
+            except Exception as e:
+                results.append(f"❌ Leaderboard failed: {e}")
+
+            await interaction.followup.send(
+                "**Test Results:**\n" + "\n".join(results),
+                ephemeral=True
+            )
+        except Exception as e:
+            LOGGER.error(f"Error in test_posts: {e}")
+            await interaction.followup.send(f"❌ Test failed: {e}", ephemeral=True)
+
     # ---------------- /status ----------------
     @tree.command(name="status", description="Show your status for today (in your timezone)")
     async def status_cmd(interaction: discord.Interaction) -> None:
