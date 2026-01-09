@@ -80,8 +80,11 @@ class ComplianceScheduler:
         self._daily_checkin_time = _parse_hhmm(self.app_config.challenge.daily_checkin_time, dtime(6, 0))
         self._leaderboard_time = _parse_hhmm(self.app_config.challenge.leaderboard_time, dtime(20, 0))
 
-        # Gemini
+        # Gemini with rate limiting
         self.gemini_client = None
+        self._gemini_last_call = 0.0  # Track last API call time
+        self._gemini_min_interval = 2.0  # Minimum 2 seconds between calls
+
         api_key = os.getenv("GEMINI_API_KEY", "").strip()
         if not api_key:
             LOGGER.warning("❌ GEMINI_API_KEY not set; Gemini DMs will use fallbacks")
@@ -93,6 +96,30 @@ class ComplianceScheduler:
                 LOGGER.info("✅ Gemini configured successfully for DMs")
             except Exception as e:
                 LOGGER.warning("❌ Failed to configure Gemini: %s", e)
+
+    async def _call_gemini_with_rate_limit(self, prompt: str) -> Optional[str]:
+        """Call Gemini API with rate limiting to avoid 429 errors"""
+        if not self.gemini_client:
+            return None
+
+        # Rate limiting: ensure minimum interval between calls
+        import time
+        now = time.time()
+        time_since_last = now - self._gemini_last_call
+        if time_since_last < self._gemini_min_interval:
+            await asyncio.sleep(self._gemini_min_interval - time_since_last)
+
+        try:
+            self._gemini_last_call = time.time()
+            resp = await asyncio.to_thread(
+                self.gemini_client.models.generate_content,
+                model='gemini-2.0-flash-exp',
+                contents=prompt
+            )
+            return (resp.text or "").strip()
+        except Exception as e:
+            LOGGER.debug("Gemini API call failed: %s", e)
+            return None
 
     def start(self) -> None:
         if self.task is None:
@@ -199,18 +226,7 @@ class ComplianceScheduler:
             except Exception as e:
                 LOGGER.debug("Reminder log check failed for %s: %s", display_name, e)
 
-        text = None
-        if self.gemini_client:
-            try:
-                resp = await asyncio.to_thread(
-                    self.gemini_client.models.generate_content,
-                    model='gemini-2.0-flash-exp',
-                    contents=MOTIVATION_PROMPT
-                )
-                text = (resp.text or "").strip()
-            except Exception as e:
-                LOGGER.debug("Gemini motivation failed: %s", e)
-
+        text = await self._call_gemini_with_rate_limit(MOTIVATION_PROMPT)
         if not text:
             text = "Keep going—you've got this!"
 
@@ -267,35 +283,23 @@ class ComplianceScheduler:
                 LOGGER.warning(f"Failed to sync compliance roles for {discord_id}: {e}")
 
         # Build personalized prompt for AI
-        text = None
-        if self.gemini_client:
-            try:
-                # Get participant details for personalization
-                summary = status.get("summary", "")
-                challenges_completed = status.get("completed_challenges", [])
+        summary = status.get("summary", "")
+        challenges_completed = status.get("completed_challenges", [])
 
-                # Build context for AI
-                context_parts = [
-                    CONGRATS_PROMPT,
-                    f"\nUser: {display_name}",
-                    f"Completion: {summary}" if summary else "",
-                ]
+        # Build context for AI
+        context_parts = [
+            CONGRATS_PROMPT,
+            f"\nUser: {display_name}",
+            f"Completion: {summary}" if summary else "",
+        ]
 
-                # Add challenge details if available
-                if challenges_completed:
-                    challenge_details = ", ".join([f"{c.get('type', 'challenge')}" for c in challenges_completed[:3]])
-                    context_parts.append(f"Challenges completed: {challenge_details}")
+        # Add challenge details if available
+        if challenges_completed:
+            challenge_details = ", ".join([f"{c.get('type', 'challenge')}" for c in challenges_completed[:3]])
+            context_parts.append(f"Challenges completed: {challenge_details}")
 
-                personalized_prompt = "\n".join([p for p in context_parts if p])
-
-                resp = await asyncio.to_thread(
-                    self.gemini_client.models.generate_content,
-                    model='gemini-2.0-flash-exp',
-                    contents=personalized_prompt
-                )
-                text = (resp.text or "").strip()
-            except Exception as e:
-                LOGGER.debug("Gemini congrats failed: %s", e)
+        personalized_prompt = "\n".join([p for p in context_parts if p])
+        text = await self._call_gemini_with_rate_limit(personalized_prompt)
 
         if not text:
             text = "Nice work—goal hit for today. Keep that streak alive!"
@@ -533,18 +537,7 @@ class ComplianceScheduler:
                 return
 
             # Try to get AI-generated team motivation message
-            text = None
-            if self.gemini_client:
-                try:
-                    resp = await asyncio.to_thread(
-                        self.gemini_client.models.generate_content,
-                        model='gemini-2.0-flash-exp',
-                        contents=TEAM_MOTIVATION_PROMPT
-                    )
-                    text = (resp.text or "").strip()
-                except Exception as e:
-                    LOGGER.debug("Gemini team motivation failed: %s", e)
-
+            text = await self._call_gemini_with_rate_limit(TEAM_MOTIVATION_PROMPT)
             if not text:
                 messages = [
                     "💪 Together we're stronger! Every person who shows up today makes our team better. Let's push each other to greatness!",
