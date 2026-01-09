@@ -32,8 +32,10 @@ TEAM_MOTIVATION_PROMPT = (
 )
 
 CONGRATS_PROMPT = (
-    "You are a supportive coach. Write a short (1–2 sentences) congratulations DM "
-    "for completing today's goal. Keep it upbeat and not cheesy."
+    "You are a supportive coach congratulating someone who just completed their daily fitness goal. "
+    "Write a short (2-3 sentences) personalized congratulations message. "
+    "Use the details provided to make it specific and encouraging. "
+    "Keep it upbeat, genuine, and not cheesy. Vary your message each time."
 )
 
 
@@ -264,13 +266,32 @@ class ComplianceScheduler:
             except Exception as e:
                 LOGGER.warning(f"Failed to sync compliance roles for {discord_id}: {e}")
 
+        # Build personalized prompt for AI
         text = None
         if self.gemini_client:
             try:
+                # Get participant details for personalization
+                summary = status.get("summary", "")
+                challenges_completed = status.get("completed_challenges", [])
+
+                # Build context for AI
+                context_parts = [
+                    CONGRATS_PROMPT,
+                    f"\nUser: {display_name}",
+                    f"Completion: {summary}" if summary else "",
+                ]
+
+                # Add challenge details if available
+                if challenges_completed:
+                    challenge_details = ", ".join([f"{c.get('type', 'challenge')}" for c in challenges_completed[:3]])
+                    context_parts.append(f"Challenges completed: {challenge_details}")
+
+                personalized_prompt = "\n".join([p for p in context_parts if p])
+
                 resp = await asyncio.to_thread(
                     self.gemini_client.models.generate_content,
                     model='gemini-2.0-flash-exp',
-                    contents=CONGRATS_PROMPT
+                    contents=personalized_prompt
                 )
                 text = (resp.text or "").strip()
             except Exception as e:
