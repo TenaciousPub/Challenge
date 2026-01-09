@@ -15,6 +15,7 @@ except Exception:  # pragma: no cover
     genai = None
 
 from .timezones import normalize_timezone
+from .role_sync import sync_compliance_roles
 
 LOGGER = logging.getLogger(__name__)
 
@@ -220,6 +221,17 @@ class ComplianceScheduler:
                 return
         except Exception:
             return
+
+        # Sync compliance roles
+        if self.app_config.bot.guild_id:
+            try:
+                guild = self.bot.get_guild(self.app_config.bot.guild_id)
+                if guild:
+                    member = guild.get_member(int(discord_id))
+                    if member:
+                        await sync_compliance_roles(member, is_compliant=True)
+            except Exception as e:
+                LOGGER.warning(f"Failed to sync compliance roles for {discord_id}: {e}")
 
         text = None
         if self.gemini_model:

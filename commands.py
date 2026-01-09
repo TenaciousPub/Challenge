@@ -11,6 +11,8 @@ import pytz
 
 from .challenge_manager import ChallengeManager
 from .timezones import normalize_timezone
+from . import role_ids
+from .role_sync import sync_compliance_roles
 
 LOGGER = logging.getLogger(__name__)
 
@@ -42,8 +44,30 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
                 is_disabled=is_disabled,
                 timezone=tz,
             )
+
+            # Assign roles
+            roles_assigned = []
+            if interaction.guild and isinstance(interaction.user, discord.Member):
+                try:
+                    # Assign Challenge Participant role
+                    participant_role = interaction.guild.get_role(role_ids.ROLE_CHALLENGE_PARTICIPANT)
+                    if participant_role and participant_role not in interaction.user.roles:
+                        await interaction.user.add_roles(participant_role, reason="Joined challenge")
+                        roles_assigned.append(participant_role.name)
+
+                    # Assign gender role
+                    gender_role_id = role_ids.get_gender_role_id(gender)
+                    if gender_role_id:
+                        gender_role = interaction.guild.get_role(gender_role_id)
+                        if gender_role and gender_role not in interaction.user.roles:
+                            await interaction.user.add_roles(gender_role, reason=f"Gender: {gender}")
+                            roles_assigned.append(gender_role.name)
+                except Exception as e:
+                    LOGGER.warning(f"Failed to assign roles to {interaction.user}: {e}")
+
+            roles_msg = f"\n🎭 Roles assigned: {', '.join(roles_assigned)}" if roles_assigned else ""
             await interaction.response.send_message(
-                f"✅ Joined! Saved timezone **{p.timezone}**.\n"
+                f"✅ Joined! Saved timezone **{p.timezone}**.{roles_msg}\n"
                 "Next: set your challenge(s) with **/challenge add** (or just start logging with /log).",
                 ephemeral=True,
             )
@@ -94,6 +118,15 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
                 workout_bonus=workout_bonus,
                 notes=notes,
             )
+
+            # Sync compliance roles if logging for today
+            if d == datetime.now(tz).date() and interaction.guild and isinstance(interaction.user, discord.Member):
+                try:
+                    status = manager.evaluate_multi_compliance(d).get(p.discord_id, {})
+                    is_compliant = bool(status.get("compliant", False))
+                    await sync_compliance_roles(interaction.user, is_compliant)
+                except Exception as e:
+                    LOGGER.warning(f"Failed to sync roles after log: {e}")
 
             await interaction.response.send_message(
                 f"✅ Logged **{amount}** for **{d.isoformat()}**"
