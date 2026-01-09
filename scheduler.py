@@ -504,7 +504,7 @@ class ComplianceScheduler:
             self._channel_post_flags.add(flag)
 
     async def _post_daily_leaderboard(self, day_key: str) -> None:
-        """Post daily leaderboard with embed to #leaderboards"""
+        """Post interactive leaderboard with rep counts and view switcher"""
         flag = ("leaderboard", day_key)
         if flag in self._channel_post_flags:
             return
@@ -518,121 +518,173 @@ class ComplianceScheduler:
             if not channel:
                 return
 
-            # Get today's date and calculate compliance (using cache)
+            # Get today's date and compliance data
             today = datetime.now(pytz.timezone(self.app_config.challenge.default_timezone)).date()
             compliance_data = self._get_cached_compliance(today)
 
-            # Build daily leaderboard - ONLY count valid participants
-            daily_participants = []
-            for discord_id, status in compliance_data.items():
-                p = self.manager.get_participant_by_id(discord_id)
-                if p:  # Only include if participant exists
-                    daily_participants.append({
-                        'discord_id': discord_id,
-                        'name': p.display_name,
-                        'compliant': bool(status.get('compliant')),
-                        'progress': status.get('summary', ''),
-                    })
+            # Get all logs for today to show actual numbers
+            all_logs = {}
+            try:
+                daily_logs = self.manager.sheets.get_all_records("DailyLog")
+                for log in daily_logs:
+                    log_date = log.get('date', '')
+                    if log_date == today.isoformat():
+                        discord_id = str(log.get('discord_id', ''))
+                        challenge_type = log.get('challenge_type', 'workout')
+                        amount = int(log.get('amount', 0))
+                        unit = log.get('unit', 'reps')
 
-            # Sort by compliance (compliant first), then alphabetically
-            daily_participants.sort(key=lambda x: (not x['compliant'], x['name']))
+                        if discord_id not in all_logs:
+                            all_logs[discord_id] = {}
+                        if challenge_type not in all_logs[discord_id]:
+                            all_logs[discord_id][challenge_type] = {'amount': 0, 'unit': unit}
+                        all_logs[discord_id][challenge_type]['amount'] += amount
+            except Exception as e:
+                LOGGER.warning(f"Failed to fetch daily logs: {e}")
 
-            # Calculate stats
-            compliant_count = sum(1 for p in daily_participants if p['compliant'])
-            total_count = len(daily_participants)
-            compliance_rate = int((compliant_count / total_count * 100)) if total_count > 0 else 0
+            # Build leaderboard by challenge type
+            challenge_types = set()
+            for discord_id, challenges in all_logs.items():
+                challenge_types.update(challenges.keys())
 
-            # Build global leaderboard (all-time stats)
-            all_participants = self.manager.get_participants()
-            global_participants = []
-            for p in all_participants:
-                try:
-                    # Get total compliant days (you can expand this with more stats)
-                    # For now, just show participants
-                    global_participants.append({
-                        'name': p.display_name,
-                        'timezone': p.timezone,
-                    })
-                except Exception:
-                    continue
+            # Default to pushups or first challenge type
+            challenge_types = sorted(list(challenge_types))
+            if not challenge_types:
+                challenge_types = ['pushups']
 
-            # Create Discord embed with flair
-            embed = discord.Embed(
-                title="🏆 Daily Challenge Leaderboard",
-                description=f"**{today.strftime('%A, %B %d, %Y')}**",
-                color=discord.Color.gold()
+            # Build embed for first challenge type (daily view)
+            embed = await self._build_leaderboard_embed(
+                today,
+                all_logs,
+                challenge_types[0] if challenge_types else 'pushups',
+                is_global=False,
+                compliance_data=compliance_data
             )
 
-            # Daily Stats Field
-            stats_emoji = "🔥" if compliance_rate >= 80 else "💪" if compliance_rate >= 50 else "📊"
-            embed.add_field(
-                name=f"{stats_emoji} Today's Performance",
-                value=(
-                    f"**{compliant_count}/{total_count}** compliant "
-                    f"({compliance_rate}%)\n"
-                    f"{'━' * 20}"
-                ),
-                inline=False
+            # Create view switcher buttons
+            view = discord.ui.View(timeout=None)
+
+            # Daily/Global toggle button
+            daily_button = discord.ui.Button(
+                label="📊 Daily",
+                style=discord.ButtonStyle.primary,
+                custom_id="leaderboard_daily",
+                disabled=True  # Start on daily view
+            )
+            global_button = discord.ui.Button(
+                label="🌍 All-Time",
+                style=discord.ButtonStyle.secondary,
+                custom_id="leaderboard_global"
             )
 
-            # Compliant participants
-            if compliant_count > 0:
-                compliant_names = [
-                    f"✅ **{p['name']}**"
-                    for p in daily_participants
-                    if p['compliant']
-                ]
-                compliant_text = "\n".join(compliant_names[:15])  # Limit to 15 to fit
-                if len(compliant_names) > 15:
-                    compliant_text += f"\n... and {len(compliant_names) - 15} more"
+            view.add_item(daily_button)
+            view.add_item(global_button)
 
-                embed.add_field(
-                    name="✅ Crushing It Today",
-                    value=compliant_text,
-                    inline=True
-                )
+            # Challenge type buttons (if multiple types exist)
+            if len(challenge_types) > 1:
+                for idx, ctype in enumerate(challenge_types[:4]):  # Limit to 4 buttons
+                    button = discord.ui.Button(
+                        label=ctype.title(),
+                        style=discord.ButtonStyle.success if idx == 0 else discord.ButtonStyle.secondary,
+                        custom_id=f"leaderboard_type_{ctype}",
+                        disabled=idx == 0
+                    )
+                    view.add_item(button)
 
-            # Non-compliant participants
-            non_compliant = [p for p in daily_participants if not p['compliant']]
-            if non_compliant:
-                non_compliant_names = [f"❌ {p['name']}" for p in non_compliant[:15]]
-                non_compliant_text = "\n".join(non_compliant_names)
-                if len(non_compliant) > 15:
-                    non_compliant_text += f"\n... and {len(non_compliant) - 15} more"
-
-                embed.add_field(
-                    name="⏰ Still Time Left",
-                    value=non_compliant_text,
-                    inline=True
-                )
-
-            # Global Stats Field
-            embed.add_field(
-                name="🌍 Challenge Stats",
-                value=(
-                    f"**Total Participants:** {len(global_participants)}\n"
-                    f"**Active Today:** {total_count}\n"
-                    f"Use `/status` to check your progress!"
-                ),
-                inline=False
-            )
-
-            # Footer with motivational message
-            footer_messages = [
-                "Every rep counts! Keep pushing! 💪",
-                "Consistency beats perfection! 🔥",
-                "The only bad workout is the one you didn't do! ⚡",
-                "You're building something great! 🎯",
-                "Small daily improvements = Big results! 🚀",
-            ]
-            embed.set_footer(text=random.choice(footer_messages))
-
-            await channel.send(embed=embed)
+            await channel.send(embed=embed, view=view)
             self._channel_post_flags.add(flag)
-            LOGGER.info("Posted daily leaderboard embed to channel %s", channel_id)
+            LOGGER.info("Posted interactive leaderboard to channel %s", channel_id)
         except Exception as e:
-            LOGGER.warning("Failed to post daily leaderboard: %s", e)
+            LOGGER.warning(f"Failed to post daily leaderboard: {e}")
+            LOGGER.exception("Leaderboard error details:")
             self._channel_post_flags.add(flag)
+
+    async def _build_leaderboard_embed(
+        self,
+        date_obj: date,
+        logs_data: dict,
+        challenge_type: str,
+        is_global: bool,
+        compliance_data: dict
+    ) -> discord.Embed:
+        """Build a leaderboard embed for specific challenge type and timeframe"""
+
+        # Build rankings for this challenge type
+        rankings = []
+        for discord_id, challenges in logs_data.items():
+            if challenge_type in challenges:
+                p = self.manager.get_participant_by_id(discord_id)
+                if p:
+                    amount = challenges[challenge_type]['amount']
+                    unit = challenges[challenge_type]['unit']
+                    rankings.append({
+                        'name': p.display_name,
+                        'amount': amount,
+                        'unit': unit,
+                        'discord_id': discord_id
+                    })
+
+        # Sort by amount (highest first)
+        rankings.sort(key=lambda x: x['amount'], reverse=True)
+
+        # Create embed
+        title = f"{'🌍 All-Time' if is_global else '🏆 Daily'} Leaderboard - {challenge_type.title()}"
+        description = f"**{date_obj.strftime('%A, %B %d, %Y')}**" if not is_global else "**All-Time Stats**"
+
+        embed = discord.Embed(
+            title=title,
+            description=description,
+            color=discord.Color.gold() if not is_global else discord.Color.blue()
+        )
+
+        # Add top performers
+        if rankings:
+            # Medal emojis for top 3
+            medals = ["🥇", "🥈", "🥉"]
+
+            leaderboard_lines = []
+            for idx, entry in enumerate(rankings[:10]):  # Top 10
+                medal = medals[idx] if idx < 3 else f"`#{idx+1}`"
+                leaderboard_lines.append(
+                    f"{medal} **{entry['name']}** — {entry['amount']:,} {entry['unit']}"
+                )
+
+            embed.add_field(
+                name="🏆 Top Performers",
+                value="\n".join(leaderboard_lines),
+                inline=False
+            )
+
+            # Stats summary
+            total_amount = sum(r['amount'] for r in rankings)
+            avg_amount = int(total_amount / len(rankings)) if rankings else 0
+
+            embed.add_field(
+                name="📊 Stats",
+                value=(
+                    f"**Total Participants:** {len(rankings)}\n"
+                    f"**Total {challenge_type.title()}:** {total_amount:,} {rankings[0]['unit']}\n"
+                    f"**Average:** {avg_amount:,} {rankings[0]['unit']}"
+                ),
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="👀 No Data Yet",
+                value=f"Be the first to log {challenge_type} today!",
+                inline=False
+            )
+
+        # Footer
+        footer_texts = [
+            "Use /log to add your progress!",
+            "Keep crushing those goals! 💪",
+            "Every rep counts! 🔥",
+            "Consistency is key! ⚡"
+        ]
+        embed.set_footer(text=random.choice(footer_texts))
+
+        return embed
 
     async def _post_motivation_message(self, day_key: str) -> None:
         """Post motivational message to #motivation channel"""
