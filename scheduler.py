@@ -7,6 +7,7 @@ import random
 from datetime import datetime, date, time as dtime, timedelta
 from typing import Optional, Set, Tuple
 
+import discord
 import pytz
 
 try:
