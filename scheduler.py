@@ -611,6 +611,15 @@ class ComplianceScheduler:
         """Fetch and aggregate logs for leaderboard display"""
         all_logs = {}
         try:
+            # Build challenge lookup dict
+            challenge_lookup = {}
+            try:
+                all_challenges = self.manager.sheets.fetch_challenges(active_only=False)
+                for ch in all_challenges:
+                    challenge_lookup[ch.challenge_id] = ch
+            except Exception as e:
+                LOGGER.warning(f"Failed to fetch challenges for lookup: {e}")
+
             # Access the DailyLog worksheet directly
             ws = self.manager.sheets._worksheet("DailyLog")
 
@@ -633,14 +642,10 @@ class ComplianceScheduler:
 
                 # Get challenge info from challenge_id
                 challenge_id = log.get('challenge_id', '')
-                if challenge_id:
-                    challenge = self.manager.get_challenge_by_id(challenge_id)
-                    if challenge:
-                        challenge_type = challenge.challenge_type
-                        unit = challenge.unit
-                    else:
-                        challenge_type = 'pushups'
-                        unit = 'reps'
+                if challenge_id and challenge_id in challenge_lookup:
+                    challenge = challenge_lookup[challenge_id]
+                    challenge_type = challenge.challenge_type
+                    unit = challenge.unit
                 else:
                     # Fallback for old data without challenge_id
                     challenge_type = 'pushups'
