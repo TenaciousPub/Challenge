@@ -84,7 +84,7 @@ class ComplianceScheduler:
         # Gemini with rate limiting
         self.gemini_client = None
         self._gemini_last_call = 0.0  # Track last API call time
-        self._gemini_min_interval = 2.0  # Minimum 2 seconds between calls
+        self._gemini_min_interval = 5.0  # Minimum 5 seconds between calls (free tier: 15 req/min)
 
         # Compliance cache to prevent excessive Google Sheets API reads
         self._compliance_cache = {}  # {day_key: {compliance_data, timestamp}}
@@ -133,7 +133,7 @@ class ComplianceScheduler:
             return {}
 
     async def _call_gemini_with_rate_limit(self, prompt: str) -> Optional[str]:
-        """Call Gemini API with rate limiting to avoid 429 errors"""
+        """Call Gemini API with rate limiting and retry logic for 429 errors"""
         if not self.gemini_client:
             return None
 
@@ -144,17 +144,35 @@ class ComplianceScheduler:
         if time_since_last < self._gemini_min_interval:
             await asyncio.sleep(self._gemini_min_interval - time_since_last)
 
-        try:
-            self._gemini_last_call = time.time()
-            resp = await asyncio.to_thread(
-                self.gemini_client.models.generate_content,
-                model='gemini-2.0-flash-exp',
-                contents=prompt
-            )
-            return (resp.text or "").strip()
-        except Exception as e:
-            LOGGER.debug("Gemini API call failed: %s", e)
-            return None
+        # Retry logic with exponential backoff for 429 errors
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                self._gemini_last_call = time.time()
+                resp = await asyncio.to_thread(
+                    self.gemini_client.models.generate_content,
+                    model='gemini-2.0-flash-exp',
+                    contents=prompt
+                )
+                return (resp.text or "").strip()
+            except Exception as e:
+                error_str = str(e)
+                # Check if it's a 429 rate limit error
+                if "429" in error_str or "Too Many Requests" in error_str:
+                    if attempt < max_retries - 1:
+                        # Exponential backoff: 10s, 20s, 40s
+                        wait_time = 10 * (2 ** attempt)
+                        LOGGER.warning(f"Gemini API rate limited (429), retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})")
+                        await asyncio.sleep(wait_time)
+                        continue
+                    else:
+                        LOGGER.warning(f"Gemini API rate limited after {max_retries} retries, giving up")
+                        return None
+                else:
+                    LOGGER.debug(f"Gemini API call failed: {e}")
+                    return None
+
+        return None
 
     def start(self) -> None:
         if self.task is None:
