@@ -489,7 +489,7 @@ class ComplianceScheduler:
         self._punish_flags.add(flag)
 
     async def _post_daily_checkin(self, day_key: str) -> None:
-        """Post morning check-in message to #daily-checkins"""
+        """Post morning check-in message to #daily-checkins with AI-generated twist"""
         flag = ("daily_checkin", day_key)
         if flag in self._channel_post_flags:
             return
@@ -503,16 +503,32 @@ class ComplianceScheduler:
             if not channel:
                 return
 
-            # Get today's targets for participants
-            participants = self.manager.get_participants()
-            if not participants:
-                message = "☀️ **Good morning!** Time to crush your goals today!"
+            # Generate AI-powered daily message
+            today = datetime.now(pytz.timezone(self.app_config.challenge.default_timezone))
+            day_of_week = today.strftime("%A")
+
+            daily_checkin_prompt = f"""Generate a brief, energizing morning check-in message for a fitness challenge group on {day_of_week}.
+Keep it under 50 words, motivational but not cheesy. Include:
+- A unique greeting (not just "good morning")
+- Reference that it's {day_of_week}
+- Encourage them to use /log to track progress
+- End with a powerful call to action
+
+Make it feel fresh, authentic, and pumped up. No generic quotes."""
+
+            ai_message = await self._call_gemini_with_rate_limit(daily_checkin_prompt)
+
+            if ai_message:
+                message = f"☀️ **Daily Check-In**\n\n{ai_message}"
             else:
-                message = (
-                    "☀️ **Good morning, challengers!**\n\n"
-                    "Time to log your progress! Use `/log` to record your work.\n\n"
-                    "💪 Let's make today count!"
-                )
+                # Fallback messages
+                fallback_messages = [
+                    f"☀️ **Rise and grind, challengers!**\n\nIt's {day_of_week}—time to turn goals into action. Use `/log` to record your progress.\n\n💪 Let's make today legendary!",
+                    f"⚡ **{day_of_week} energy incoming!**\n\nYour body is capable of amazing things. Show it what you've got today! Don't forget to `/log` your work.\n\n🔥 Push harder than yesterday!",
+                    f"🚀 **{day_of_week}, let's fly!**\n\nEvery rep counts. Every set matters. Track your journey with `/log`.\n\n💯 Commitment over comfort!",
+                    f"💥 **Happy {day_of_week}, warriors!**\n\nThe only bad workout is the one you didn't do. Get moving and `/log` that progress!\n\n🎯 Consistency builds champions!",
+                ]
+                message = random.choice(fallback_messages)
 
             await channel.send(message)
             self._channel_post_flags.add(flag)
