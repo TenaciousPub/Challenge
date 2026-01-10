@@ -5,7 +5,7 @@ import logging
 import os
 import random
 from datetime import datetime, date, time as dtime, timedelta
-from typing import Optional, Set, Tuple
+from typing import Optional, Set, Tuple, List
 
 import discord
 import pytz
@@ -503,6 +503,157 @@ class ComplianceScheduler:
             LOGGER.warning("Failed to post daily check-in: %s", e)
             self._channel_post_flags.add(flag)
 
+    class LeaderboardView(discord.ui.View):
+        """Interactive view for leaderboard with buttons"""
+
+        def __init__(self, scheduler, today: date, challenge_types: List[str]):
+            super().__init__(timeout=None)
+            self.scheduler = scheduler
+            self.today = today
+            self.challenge_types = challenge_types if challenge_types else ['pushups']
+            self.is_global = False
+            self.current_challenge = self.challenge_types[0]
+
+            # Create buttons
+            self._create_buttons()
+
+        def _create_buttons(self):
+            # Clear existing items
+            self.clear_items()
+
+            # Daily/Global toggle buttons
+            daily_button = discord.ui.Button(
+                label="📊 Daily",
+                style=discord.ButtonStyle.primary if not self.is_global else discord.ButtonStyle.secondary,
+                custom_id="leaderboard_daily",
+                disabled=not self.is_global
+            )
+            daily_button.callback = self._daily_callback
+
+            global_button = discord.ui.Button(
+                label="🌍 All-Time",
+                style=discord.ButtonStyle.primary if self.is_global else discord.ButtonStyle.secondary,
+                custom_id="leaderboard_global",
+                disabled=self.is_global
+            )
+            global_button.callback = self._global_callback
+
+            self.add_item(daily_button)
+            self.add_item(global_button)
+
+            # Challenge type buttons (if multiple types exist)
+            if len(self.challenge_types) > 1:
+                for ctype in self.challenge_types[:4]:  # Limit to 4 buttons
+                    button = discord.ui.Button(
+                        label=ctype.title(),
+                        style=discord.ButtonStyle.success if ctype == self.current_challenge else discord.ButtonStyle.secondary,
+                        custom_id=f"leaderboard_type_{ctype}",
+                        disabled=ctype == self.current_challenge
+                    )
+                    # Create callback with closure
+                    async def type_callback(interaction: discord.Interaction, challenge_type=ctype):
+                        await self._challenge_type_callback(interaction, challenge_type)
+                    button.callback = type_callback
+                    self.add_item(button)
+
+        async def _daily_callback(self, interaction: discord.Interaction):
+            await interaction.response.defer()
+            self.is_global = False
+            await self._update_leaderboard(interaction)
+
+        async def _global_callback(self, interaction: discord.Interaction):
+            await interaction.response.defer()
+            self.is_global = True
+            await self._update_leaderboard(interaction)
+
+        async def _challenge_type_callback(self, interaction: discord.Interaction, challenge_type: str):
+            await interaction.response.defer()
+            self.current_challenge = challenge_type
+            await self._update_leaderboard(interaction)
+
+        async def _update_leaderboard(self, interaction: discord.Interaction):
+            """Rebuild and update the leaderboard embed"""
+            try:
+                # Fetch logs based on current view
+                all_logs = self.scheduler._fetch_logs_for_leaderboard(
+                    target_date=self.today if not self.is_global else None,
+                    is_global=self.is_global
+                )
+
+                # Get compliance data
+                compliance_data = self.scheduler._get_cached_compliance(self.today)
+
+                # Rebuild embed
+                embed = await self.scheduler._build_leaderboard_embed(
+                    self.today,
+                    all_logs,
+                    self.current_challenge,
+                    is_global=self.is_global,
+                    compliance_data=compliance_data
+                )
+
+                # Recreate buttons with updated state
+                self._create_buttons()
+
+                # Update the message
+                await interaction.edit_original_response(embed=embed, view=self)
+
+            except Exception as e:
+                LOGGER.error(f"Failed to update leaderboard: {e}")
+                import traceback
+                LOGGER.error(traceback.format_exc())
+                try:
+                    await interaction.followup.send("Failed to update leaderboard", ephemeral=True)
+                except:
+                    pass
+
+    def _fetch_logs_for_leaderboard(self, target_date: Optional[date] = None, is_global: bool = False) -> dict:
+        """Fetch and aggregate logs for leaderboard display"""
+        all_logs = {}
+        try:
+            # Access the DailyLog worksheet directly
+            ws = self.manager.sheets._worksheet("DailyLog")
+
+            # Fetch all records with new schema
+            from sheets import _safe_get_all_records
+            expected_headers = ["date", "discord_id", "amount", "challenge_type", "unit", "logged_at"]
+            daily_logs = _safe_get_all_records(ws, expected_headers=expected_headers)
+
+            for log in daily_logs:
+                log_date = log.get('date', '')
+
+                # Filter by date if not global view
+                if not is_global and target_date:
+                    if log_date != target_date.isoformat():
+                        continue
+
+                discord_id = str(log.get('discord_id', ''))
+                if not discord_id:
+                    continue
+
+                challenge_type = log.get('challenge_type', 'pushups')
+
+                # Handle amount - could be string or int
+                try:
+                    amount = int(log.get('amount', 0))
+                except (ValueError, TypeError):
+                    amount = 0
+
+                unit = log.get('unit', 'reps')
+
+                if discord_id not in all_logs:
+                    all_logs[discord_id] = {}
+                if challenge_type not in all_logs[discord_id]:
+                    all_logs[discord_id][challenge_type] = {'amount': 0, 'unit': unit}
+                all_logs[discord_id][challenge_type]['amount'] += amount
+
+        except Exception as e:
+            LOGGER.warning(f"Failed to fetch daily logs: {e}")
+            import traceback
+            LOGGER.warning(traceback.format_exc())
+
+        return all_logs
+
     async def _post_daily_leaderboard(self, day_key: str) -> None:
         """Post interactive leaderboard with rep counts and view switcher"""
         flag = ("leaderboard", day_key)
@@ -522,25 +673,8 @@ class ComplianceScheduler:
             today = datetime.now(pytz.timezone(self.app_config.challenge.default_timezone)).date()
             compliance_data = self._get_cached_compliance(today)
 
-            # Get all logs for today to show actual numbers
-            all_logs = {}
-            try:
-                daily_logs = self.manager.sheets.get_all_records("DailyLog")
-                for log in daily_logs:
-                    log_date = log.get('date', '')
-                    if log_date == today.isoformat():
-                        discord_id = str(log.get('discord_id', ''))
-                        challenge_type = log.get('challenge_type', 'workout')
-                        amount = int(log.get('amount', 0))
-                        unit = log.get('unit', 'reps')
-
-                        if discord_id not in all_logs:
-                            all_logs[discord_id] = {}
-                        if challenge_type not in all_logs[discord_id]:
-                            all_logs[discord_id][challenge_type] = {'amount': 0, 'unit': unit}
-                        all_logs[discord_id][challenge_type]['amount'] += amount
-            except Exception as e:
-                LOGGER.warning(f"Failed to fetch daily logs: {e}")
+            # Get all logs for today
+            all_logs = self._fetch_logs_for_leaderboard(target_date=today, is_global=False)
 
             # Build leaderboard by challenge type
             challenge_types = set()
@@ -552,44 +686,17 @@ class ComplianceScheduler:
             if not challenge_types:
                 challenge_types = ['pushups']
 
+            # Create interactive view with buttons
+            view = self.LeaderboardView(self, today, challenge_types)
+
             # Build embed for first challenge type (daily view)
             embed = await self._build_leaderboard_embed(
                 today,
                 all_logs,
-                challenge_types[0] if challenge_types else 'pushups',
+                view.current_challenge,
                 is_global=False,
                 compliance_data=compliance_data
             )
-
-            # Create view switcher buttons
-            view = discord.ui.View(timeout=None)
-
-            # Daily/Global toggle button
-            daily_button = discord.ui.Button(
-                label="📊 Daily",
-                style=discord.ButtonStyle.primary,
-                custom_id="leaderboard_daily",
-                disabled=True  # Start on daily view
-            )
-            global_button = discord.ui.Button(
-                label="🌍 All-Time",
-                style=discord.ButtonStyle.secondary,
-                custom_id="leaderboard_global"
-            )
-
-            view.add_item(daily_button)
-            view.add_item(global_button)
-
-            # Challenge type buttons (if multiple types exist)
-            if len(challenge_types) > 1:
-                for idx, ctype in enumerate(challenge_types[:4]):  # Limit to 4 buttons
-                    button = discord.ui.Button(
-                        label=ctype.title(),
-                        style=discord.ButtonStyle.success if idx == 0 else discord.ButtonStyle.secondary,
-                        custom_id=f"leaderboard_type_{ctype}",
-                        disabled=idx == 0
-                    )
-                    view.add_item(button)
 
             await channel.send(embed=embed, view=view)
             self._channel_post_flags.add(flag)
