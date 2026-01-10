@@ -614,9 +614,9 @@ class ComplianceScheduler:
             # Access the DailyLog worksheet directly
             ws = self.manager.sheets._worksheet("DailyLog")
 
-            # Fetch all records with new schema
-            from sheets import _safe_get_all_records
-            expected_headers = ["date", "discord_id", "amount", "challenge_type", "unit", "logged_at"]
+            # Fetch all records - use old schema with pushup_count
+            from .sheets import _safe_get_all_records
+            expected_headers = ["date", "discord_id", "pushup_count", "workout_bonus", "penalized", "notes", "logged_at", "challenge_id"]
             daily_logs = _safe_get_all_records(ws, expected_headers=expected_headers)
 
             for log in daily_logs:
@@ -631,15 +631,28 @@ class ComplianceScheduler:
                 if not discord_id:
                     continue
 
-                challenge_type = log.get('challenge_type', 'pushups')
+                # Get challenge info from challenge_id
+                challenge_id = log.get('challenge_id', '')
+                if challenge_id:
+                    challenge = self.manager.get_challenge_by_id(challenge_id)
+                    if challenge:
+                        challenge_type = challenge.challenge_type
+                        unit = challenge.unit
+                    else:
+                        challenge_type = 'pushups'
+                        unit = 'reps'
+                else:
+                    # Fallback for old data without challenge_id
+                    challenge_type = 'pushups'
+                    unit = 'reps'
 
-                # Handle amount - could be string or int
+                # Handle amount - old schema uses pushup_count
                 try:
-                    amount = int(log.get('amount', 0))
+                    pushup_count = int(log.get('pushup_count', 0))
+                    workout_bonus = int(log.get('workout_bonus', 0)) if log.get('workout_bonus') else 0
+                    amount = pushup_count + workout_bonus
                 except (ValueError, TypeError):
                     amount = 0
-
-                unit = log.get('unit', 'reps')
 
                 if discord_id not in all_logs:
                     all_logs[discord_id] = {}
