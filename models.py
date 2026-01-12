@@ -19,6 +19,7 @@ class Participant:
     preferred_challenge_id: Optional[str] = None
     height_cm: Optional[float] = None  # Height in centimeters
     weight_kg: Optional[float] = None  # Weight in kilograms
+    nutrition_goal: Optional[str] = None  # Fitness/nutrition goal
 
 
 @dataclass(slots=True)

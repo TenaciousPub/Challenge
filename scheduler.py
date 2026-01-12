@@ -42,6 +42,7 @@ Client Profile:
 - Weight: {weight_kg} kg ({weight_lbs} lbs)
 - BMI: {bmi:.1f}
 - Activity Level: High (daily fitness challenge participant)
+- Goal: {goal}
 
 Your Role:
 Provide personalized, evidence-based nutrition advice tailored to this client's fitness goals. Focus on:
@@ -58,6 +59,7 @@ Guidelines:
 - Provide actionable, practical advice
 - Consider their BMI and health implications
 - Focus on sustainable, healthy approaches
+- Tailor advice specifically to their stated goal
 - Keep responses concise but comprehensive (3-5 paragraphs)
 
 Client Question/Request: {user_question}
@@ -181,6 +183,7 @@ class ComplianceScheduler:
         gender: Optional[str],
         height_cm: float,
         weight_kg: float,
+        nutrition_goal: Optional[str],
         user_question: str,
     ) -> Tuple[str, str]:
         """
@@ -190,6 +193,7 @@ class ComplianceScheduler:
             gender: User's gender (male/female/other)
             height_cm: Height in centimeters
             weight_kg: Weight in kilograms
+            nutrition_goal: User's fitness/nutrition goal
             user_question: User's specific question or request
 
         Returns:
@@ -212,6 +216,7 @@ class ComplianceScheduler:
             weight_kg=weight_kg,
             weight_lbs=weight_lbs,
             bmi=bmi,
+            goal=nutrition_goal or "general fitness",
             user_question=user_question,
         )
 

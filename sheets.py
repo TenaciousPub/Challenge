@@ -136,6 +136,7 @@ class GoogleSheetsService:
             "preferred_challenge_id",
             "height_cm",
             "weight_kg",
+            "nutrition_goal",
         ]
         headers = _strip_headers(ws.row_values(1))
         if not headers:
@@ -169,6 +170,7 @@ class GoogleSheetsService:
             "preferred_challenge_id",
             "height_cm",
             "weight_kg",
+            "nutrition_goal",
         ]
         rows = _safe_get_all_records(ws, expected_headers=expected_headers)
 
@@ -199,6 +201,9 @@ class GoogleSheetsService:
                 except Exception:
                     pass
 
+                # Parse nutrition goal
+                nutrition_goal_val = str(r.get("nutrition_goal") or "").strip() or None
+
                 participants.append(
                     Participant(
                         discord_id=str(r.get("discord_id", "")).strip(),
@@ -213,6 +218,7 @@ class GoogleSheetsService:
                         preferred_challenge_id=str(r.get("preferred_challenge_id") or "").strip() or None,
                         height_cm=height_cm_val,
                         weight_kg=weight_kg_val,
+                        nutrition_goal=nutrition_goal_val,
                     )
                 )
             except Exception as e:
@@ -237,6 +243,7 @@ class GoogleSheetsService:
                 participant.preferred_challenge_id or "",
                 str(participant.height_cm) if participant.height_cm is not None else "",
                 str(participant.weight_kg) if participant.weight_kg is not None else "",
+                participant.nutrition_goal or "",
             ],
             value_input_option="USER_ENTERED",
         )
@@ -247,7 +254,7 @@ class GoogleSheetsService:
 
         headers = _strip_headers(ws.row_values(1))
         expected_headers = [
-            "discord_id","discord_tag","display_name","gender","is_disabled","timezone","joined_on","last_punished_on","last_congrats_on","preferred_challenge_id","height_cm","weight_kg"
+            "discord_id","discord_tag","display_name","gender","is_disabled","timezone","joined_on","last_punished_on","last_congrats_on","preferred_challenge_id","height_cm","weight_kg","nutrition_goal"
         ]
 
         if _headers_have_blanks_or_dupes(headers):
