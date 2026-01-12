@@ -416,6 +416,125 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
         except Exception as e:
             await interaction.response.send_message(f"❌ {e}", ephemeral=True)
 
+    # ---------------- /nutrition (group) ----------------
+    nutrition_group = app_commands.Group(name="nutrition", description="Personalized fitness nutrition coaching")
+
+    # Channel restriction constant
+    NUTRITION_CHANNEL_ID = 1458307023111323739
+
+    def _check_nutrition_channel(interaction: discord.Interaction) -> bool:
+        """Check if command is being used in the allowed channel."""
+        if not interaction.channel:
+            return False
+        return interaction.channel.id == NUTRITION_CHANNEL_ID
+
+    @nutrition_group.command(name="set", description="Set your height and weight for personalized nutrition advice")
+    @app_commands.describe(
+        height_cm="Your height in centimeters (e.g., 175)",
+        weight_kg="Your weight in kilograms (e.g., 70)"
+    )
+    async def nutrition_set(
+        interaction: discord.Interaction,
+        height_cm: float,
+        weight_kg: float,
+    ) -> None:
+        if not _check_nutrition_channel(interaction):
+            await interaction.response.send_message(
+                f"❌ This command can only be used in <#{NUTRITION_CHANNEL_ID}>",
+                ephemeral=True
+            )
+            return
+
+        try:
+            p = manager.get_participant(str(interaction.user.id))
+            if not p:
+                await interaction.response.send_message("❌ Use **/join** first to join the challenge.", ephemeral=True)
+                return
+
+            # Validate input
+            if height_cm < 50 or height_cm > 300:
+                await interaction.response.send_message("❌ Height must be between 50-300 cm", ephemeral=True)
+                return
+            if weight_kg < 20 or weight_kg > 500:
+                await interaction.response.send_message("❌ Weight must be between 20-500 kg", ephemeral=True)
+                return
+
+            # Update participant fields
+            manager.sheets.update_participant_field(p.discord_id, "height_cm", str(height_cm))
+            manager.sheets.update_participant_field(p.discord_id, "weight_kg", str(weight_kg))
+
+            # Refresh participant data
+            manager.refresh_participants()
+
+            # Calculate BMI
+            height_m = height_cm / 100
+            bmi = weight_kg / (height_m * height_m)
+
+            await interaction.response.send_message(
+                f"✅ Profile updated!\n"
+                f"Height: **{height_cm} cm**\n"
+                f"Weight: **{weight_kg} kg**\n"
+                f"BMI: **{bmi:.1f}**\n\n"
+                f"Now you can use **/nutrition ask** to get personalized nutrition advice!",
+                ephemeral=True
+            )
+        except Exception as e:
+            LOGGER.exception("Error in nutrition_set: %s", e)
+            await interaction.response.send_message(f"❌ {e}", ephemeral=True)
+
+    @nutrition_group.command(name="ask", description="Get personalized nutrition advice from an AI fitness nutrition coach")
+    @app_commands.describe(
+        question="Your nutrition question or goal (e.g., 'How should I eat to build muscle?')"
+    )
+    async def nutrition_ask(
+        interaction: discord.Interaction,
+        question: str,
+    ) -> None:
+        if not _check_nutrition_channel(interaction):
+            await interaction.response.send_message(
+                f"❌ This command can only be used in <#{NUTRITION_CHANNEL_ID}>",
+                ephemeral=True
+            )
+            return
+
+        try:
+            p = manager.get_participant(str(interaction.user.id))
+            if not p:
+                await interaction.response.send_message("❌ Use **/join** first to join the challenge.", ephemeral=True)
+                return
+
+            # Check if height/weight are set
+            if not p.height_cm or not p.weight_kg:
+                await interaction.response.send_message(
+                    "❌ Please set your height and weight first using **/nutrition set**",
+                    ephemeral=True
+                )
+                return
+
+            # Defer response since AI generation takes time
+            await interaction.response.defer()
+
+            # Generate nutrition advice using the scheduler's AI
+            advice, provider = await bot.scheduler.generate_nutrition_advice(
+                gender=p.gender,
+                height_cm=p.height_cm,
+                weight_kg=p.weight_kg,
+                user_question=question
+            )
+
+            # Send the advice
+            await interaction.followup.send(
+                f"**🥗 Nutrition Coach ({provider}):**\n\n{advice}"
+            )
+
+        except Exception as e:
+            LOGGER.exception("Error in nutrition_ask: %s", e)
+            try:
+                await interaction.followup.send(f"❌ Error generating advice: {e}")
+            except:
+                await interaction.response.send_message(f"❌ Error generating advice: {e}", ephemeral=True)
+
     tree.add_command(challenge_group)
     tree.add_command(admin_group)
     tree.add_command(dayoff_group)
+    tree.add_command(nutrition_group)

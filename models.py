@@ -17,6 +17,8 @@ class Participant:
     last_punished_on: Optional[str] = None  # YYYY-MM-DD in participant tz
     last_congrats_on: Optional[str] = None  # YYYY-MM-DD in participant tz
     preferred_challenge_id: Optional[str] = None
+    height_cm: Optional[float] = None  # Height in centimeters
+    weight_kg: Optional[float] = None  # Weight in kilograms
 
 
 @dataclass(slots=True)
