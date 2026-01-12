@@ -7,3 +7,6 @@ google-auth>=2.23.4
 
 # Timezone handling
 pytz>=2023.3
+
+# AI providers
+anthropic>=0.40.0

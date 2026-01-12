@@ -14,6 +14,11 @@ try:
 except Exception:  # pragma: no cover
     genai = None
 
+try:
+    from anthropic import Anthropic  # type: ignore
+except Exception:  # pragma: no cover
+    Anthropic = None
+
 from .timezones import normalize_timezone
 
 LOGGER = logging.getLogger(__name__)
@@ -64,7 +69,21 @@ class ComplianceScheduler:
         self._reminder_time = _parse_hhmm(self.app_config.challenge.reminder_time_local, dtime(22, 0))
         self._punish_time = _parse_hhmm(self.app_config.challenge.punishment_run_time_local, dtime(0, 5))
 
-        # Gemini
+        # Claude (primary)
+        self.claude_client = None
+        claude_api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+        if not claude_api_key:
+            LOGGER.warning("❌ ANTHROPIC_API_KEY not set; Claude DMs will use fallbacks")
+        elif not Anthropic:
+            LOGGER.warning("❌ anthropic library not installed; Claude DMs will use fallbacks")
+        else:
+            try:
+                self.claude_client = Anthropic(api_key=claude_api_key)
+                LOGGER.info("✅ Claude configured successfully for DMs")
+            except Exception as e:
+                LOGGER.warning("❌ Failed to configure Claude: %s", e)
+
+        # Gemini (backup)
         self.gemini_model = None
         api_key = os.getenv("GEMINI_API_KEY", "").strip()
         if not api_key:
@@ -82,6 +101,49 @@ class ComplianceScheduler:
     def start(self) -> None:
         if self.task is None:
             self.task = asyncio.create_task(self.loop())
+
+    async def _generate_ai_message(self, prompt: str, fallback: str) -> str:
+        """
+        Generate AI message with fallback chain: Claude → Gemini → Local string.
+
+        Args:
+            prompt: The prompt to send to the AI provider
+            fallback: The local fallback string if all providers fail
+
+        Returns:
+            The generated message text
+        """
+        # Try Claude first
+        if self.claude_client:
+            try:
+                response = await asyncio.to_thread(
+                    self.claude_client.messages.create,
+                    model="claude-3-5-sonnet-20241022",
+                    max_tokens=150,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                if response.content and len(response.content) > 0:
+                    text = response.content[0].text.strip()
+                    if text:
+                        LOGGER.debug("✅ Claude generated message successfully")
+                        return text
+            except Exception as e:
+                LOGGER.debug("Claude generation failed, trying Gemini: %s", e)
+
+        # Try Gemini as backup
+        if self.gemini_model:
+            try:
+                resp = await asyncio.to_thread(self.gemini_model.generate_content, prompt)
+                text = (getattr(resp, "text", "") or "").strip()
+                if text:
+                    LOGGER.debug("✅ Gemini generated message successfully")
+                    return text
+            except Exception as e:
+                LOGGER.debug("Gemini generation failed, using local fallback: %s", e)
+
+        # Use local fallback
+        LOGGER.debug("Using local fallback message")
+        return fallback
 
     async def loop(self) -> None:
         await self.bot.wait_until_ready()
@@ -169,16 +231,10 @@ class ComplianceScheduler:
             except Exception as e:
                 LOGGER.debug("Reminder log check failed for %s: %s", display_name, e)
 
-        text = None
-        if self.gemini_model:
-            try:
-                resp = await asyncio.to_thread(self.gemini_model.generate_content, MOTIVATION_PROMPT)
-                text = (getattr(resp, "text", "") or "").strip()
-            except Exception as e:
-                LOGGER.debug("Gemini motivation failed: %s", e)
-
-        if not text:
-            text = "Keep going—you've got this!"
+        text = await self._generate_ai_message(
+            prompt=MOTIVATION_PROMPT,
+            fallback="Keep going—you've got this!"
+        )
 
         try:
             user = self.bot.get_user(int(discord_id))
@@ -221,16 +277,10 @@ class ComplianceScheduler:
         except Exception:
             return
 
-        text = None
-        if self.gemini_model:
-            try:
-                resp = await asyncio.to_thread(self.gemini_model.generate_content, CONGRATS_PROMPT)
-                text = (getattr(resp, "text", "") or "").strip()
-            except Exception as e:
-                LOGGER.debug("Gemini congrats failed: %s", e)
-
-        if not text:
-            text = "Nice work—goal hit for today. Keep that streak alive!"
+        text = await self._generate_ai_message(
+            prompt=CONGRATS_PROMPT,
+            fallback="Nice work—goal hit for today. Keep that streak alive!"
+        )
 
         try:
             user = self.bot.get_user(int(discord_id))
