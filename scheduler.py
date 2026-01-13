@@ -167,7 +167,7 @@ class ComplianceScheduler:
                 self._ai_last_call = time.time()
                 response = await asyncio.to_thread(
                     lambda: self.claude_client.messages.create(
-                        model="claude-3-5-sonnet-20241022",
+                        model="claude-sonnet-4-5",
                         max_tokens=200,
                         messages=[{"role": "user", "content": prompt}]
                     )
