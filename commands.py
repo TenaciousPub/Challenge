@@ -461,6 +461,82 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
             LOGGER.error(f"Error in setup_roles: {e}")
             await interaction.followup.send(f"❌ An error occurred: {e}", ephemeral=True)
 
+    @admin_group.command(name="leaderboard", description="Manually post the leaderboard to the leaderboard channel")
+    async def admin_leaderboard(interaction: discord.Interaction) -> None:
+        if not _is_admin(interaction):
+            await interaction.followup.send("❌ You need **Manage Server** to run this.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            from datetime import datetime
+            import pytz
+
+            scheduler = bot.scheduler
+            if not scheduler:
+                await interaction.followup.send("❌ Scheduler not available", ephemeral=True)
+                return
+
+            # Get today's date
+            default_tz = pytz.timezone(app_config.challenge.default_timezone)
+            today = datetime.now(default_tz).date()
+
+            # Check if leaderboard channel is configured
+            if not app_config.bot.leaderboards_channel_id:
+                await interaction.followup.send(
+                    "❌ Leaderboard channel not configured. Set LEADERBOARDS_CHANNEL_ID in Railway.",
+                    ephemeral=True
+                )
+                return
+
+            channel = bot.get_channel(app_config.bot.leaderboards_channel_id)
+            if not channel:
+                await interaction.followup.send(
+                    f"❌ Could not find channel with ID {app_config.bot.leaderboards_channel_id}",
+                    ephemeral=True
+                )
+                return
+
+            # Fetch logs
+            all_logs = scheduler._fetch_logs_for_leaderboard(target_date=today, is_global=False)
+
+            # Get challenge types
+            challenge_types = set()
+            for discord_id, challenges in all_logs.items():
+                challenge_types.update(challenges.keys())
+
+            challenge_types = sorted(list(challenge_types))
+            if not challenge_types:
+                challenge_types = ['pushups']
+
+            # Create paginated view
+            view = scheduler.LeaderboardView(scheduler, today, challenge_types)
+
+            # Build initial embed
+            embed = scheduler._build_leaderboard_embed(
+                date_obj=today,
+                logs_data=all_logs,
+                challenge_type=challenge_types[0],
+                is_global=False,
+                current_page=1,
+                total_pages=len(challenge_types)
+            )
+
+            # Post to channel
+            await channel.send(embed=embed, view=view)
+
+            await interaction.followup.send(
+                f"✅ Posted leaderboard to <#{app_config.bot.leaderboards_channel_id}>",
+                ephemeral=True
+            )
+
+        except Exception as e:
+            LOGGER.error(f"Error in admin_leaderboard: {e}")
+            import traceback
+            LOGGER.error(traceback.format_exc())
+            await interaction.followup.send(f"❌ Failed to post leaderboard: {e}", ephemeral=True)
+
     # ---------------- /status ----------------
     @tree.command(name="status", description="Show your status for today (in your timezone)")
     async def status_cmd(interaction: discord.Interaction) -> None:
