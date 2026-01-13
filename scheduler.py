@@ -159,6 +159,8 @@ class ComplianceScheduler:
         if time_since_last < self._ai_min_interval:
             await asyncio.sleep(self._ai_min_interval - time_since_last)
 
+        LOGGER.info(f"AI call attempt - Claude: {bool(self.claude_client)}, Gemini: {bool(self.gemini_client)}")
+
         # Try Claude first (primary)
         if self.claude_client:
             try:
@@ -173,9 +175,12 @@ class ComplianceScheduler:
                 if response.content and len(response.content) > 0:
                     text = response.content[0].text.strip()
                     if text:
+                        LOGGER.info("✅ Claude API call successful")
                         return (text, "Claude")
             except Exception as e:
-                LOGGER.debug(f"Claude API call failed: {e}")
+                LOGGER.warning(f"❌ Claude API call failed: {e}")
+                import traceback
+                LOGGER.warning(traceback.format_exc())
 
         # Try Gemini backup
         if self.gemini_client:
@@ -188,9 +193,12 @@ class ComplianceScheduler:
                 )
                 text = (response.text or "").strip()
                 if text:
+                    LOGGER.info("✅ Gemini API call successful")
                     return (text, "Gemini")
             except Exception as e:
-                LOGGER.debug(f"Gemini API call failed: {e}")
+                LOGGER.warning(f"❌ Gemini API call failed: {e}")
+                import traceback
+                LOGGER.warning(traceback.format_exc())
 
         # Local fallback
         if fallback_messages:

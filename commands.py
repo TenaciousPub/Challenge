@@ -747,7 +747,7 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
                 # Update sheet
                 try:
                     ws = manager.sheets._worksheet("NutritionProfiles")
-                    from sheets import _safe_get_all_records
+                    from .sheets import _safe_get_all_records
                     profiles = _safe_get_all_records(ws, expected_headers=["discord_id", "display_name", "height_cm", "weight_kg", "goal", "last_updated"])
 
                     # Find or create row
