@@ -537,110 +537,6 @@ Make it feel fresh, authentic, and pumped up. No generic quotes."""
             LOGGER.warning("Failed to post daily check-in: %s", e)
             self._channel_post_flags.add(flag)
 
-    class LeaderboardView(discord.ui.View):
-        """Interactive view for leaderboard with buttons"""
-
-        def __init__(self, scheduler, today: date, challenge_types: List[str]):
-            super().__init__(timeout=None)
-            self.scheduler = scheduler
-            self.today = today
-            self.challenge_types = challenge_types if challenge_types else ['pushups']
-            self.is_global = False
-            self.current_challenge = self.challenge_types[0]
-
-            # Create buttons
-            self._create_buttons()
-
-        def _create_buttons(self):
-            # Clear existing items
-            self.clear_items()
-
-            # Daily/Global toggle buttons
-            daily_button = discord.ui.Button(
-                label="📊 Daily",
-                style=discord.ButtonStyle.primary if not self.is_global else discord.ButtonStyle.secondary,
-                custom_id="leaderboard_daily",
-                disabled=not self.is_global
-            )
-            daily_button.callback = self._daily_callback
-
-            global_button = discord.ui.Button(
-                label="🌍 All-Time",
-                style=discord.ButtonStyle.primary if self.is_global else discord.ButtonStyle.secondary,
-                custom_id="leaderboard_global",
-                disabled=self.is_global
-            )
-            global_button.callback = self._global_callback
-
-            self.add_item(daily_button)
-            self.add_item(global_button)
-
-            # Challenge type buttons (if multiple types exist)
-            if len(self.challenge_types) > 1:
-                for ctype in self.challenge_types[:4]:  # Limit to 4 buttons
-                    button = discord.ui.Button(
-                        label=ctype.title(),
-                        style=discord.ButtonStyle.success if ctype == self.current_challenge else discord.ButtonStyle.secondary,
-                        custom_id=f"leaderboard_type_{ctype}",
-                        disabled=ctype == self.current_challenge
-                    )
-                    # Create callback with closure
-                    async def type_callback(interaction: discord.Interaction, challenge_type=ctype):
-                        await self._challenge_type_callback(interaction, challenge_type)
-                    button.callback = type_callback
-                    self.add_item(button)
-
-        async def _daily_callback(self, interaction: discord.Interaction):
-            await interaction.response.defer()
-            self.is_global = False
-            await self._update_leaderboard(interaction)
-
-        async def _global_callback(self, interaction: discord.Interaction):
-            await interaction.response.defer()
-            self.is_global = True
-            await self._update_leaderboard(interaction)
-
-        async def _challenge_type_callback(self, interaction: discord.Interaction, challenge_type: str):
-            await interaction.response.defer()
-            self.current_challenge = challenge_type
-            await self._update_leaderboard(interaction)
-
-        async def _update_leaderboard(self, interaction: discord.Interaction):
-            """Rebuild and update the leaderboard embed"""
-            try:
-                # Fetch logs based on current view
-                all_logs = self.scheduler._fetch_logs_for_leaderboard(
-                    target_date=self.today if not self.is_global else None,
-                    is_global=self.is_global
-                )
-
-                # Get compliance data
-                compliance_data = self.scheduler._get_cached_compliance(self.today)
-
-                # Rebuild embed
-                embed = await self.scheduler._build_leaderboard_embed(
-                    self.today,
-                    all_logs,
-                    self.current_challenge,
-                    is_global=self.is_global,
-                    compliance_data=compliance_data
-                )
-
-                # Recreate buttons with updated state
-                self._create_buttons()
-
-                # Update the message
-                await interaction.edit_original_response(embed=embed, view=self)
-
-            except Exception as e:
-                LOGGER.error(f"Failed to update leaderboard: {e}")
-                import traceback
-                LOGGER.error(traceback.format_exc())
-                try:
-                    await interaction.followup.send("Failed to update leaderboard", ephemeral=True)
-                except:
-                    pass
-
     def _fetch_logs_for_leaderboard(self, target_date: Optional[date] = None, is_global: bool = False) -> dict:
         """Fetch and aggregate logs for leaderboard display"""
         all_logs = {}
@@ -707,7 +603,7 @@ Make it feel fresh, authentic, and pumped up. No generic quotes."""
         return all_logs
 
     async def _post_daily_leaderboard(self, day_key: str) -> None:
-        """Post interactive leaderboard with rep counts and view switcher"""
+        """Post daily leaderboard showing all challenge types"""
         flag = ("leaderboard", day_key)
         if flag in self._channel_post_flags:
             return
@@ -721,9 +617,8 @@ Make it feel fresh, authentic, and pumped up. No generic quotes."""
             if not channel:
                 return
 
-            # Get today's date and compliance data
+            # Get today's date
             today = datetime.now(pytz.timezone(self.app_config.challenge.default_timezone)).date()
-            compliance_data = self._get_cached_compliance(today)
 
             # Get all logs for today
             all_logs = self._fetch_logs_for_leaderboard(target_date=today, is_global=False)
@@ -733,117 +628,88 @@ Make it feel fresh, authentic, and pumped up. No generic quotes."""
             for discord_id, challenges in all_logs.items():
                 challenge_types.update(challenges.keys())
 
-            # Default to pushups or first challenge type
             challenge_types = sorted(list(challenge_types))
-            if not challenge_types:
-                challenge_types = ['pushups']
 
-            # Create interactive view with buttons
-            view = self.LeaderboardView(self, today, challenge_types)
+            if not challenge_types or not all_logs:
+                # No data yet
+                embed = discord.Embed(
+                    title="🏆 Daily Leaderboard",
+                    description=f"**{today.strftime('%A, %B %d, %Y')}**\n\n💪 No Data Yet\nBe the first to log today!\n\nUse `/log` to add your progress!",
+                    color=0xFFD700
+                )
+                await channel.send(embed=embed)
+                self._channel_post_flags.add(flag)
+                LOGGER.info("Posted empty leaderboard to channel %s", channel_id)
+                return
 
-            # Build embed for first challenge type (daily view)
-            embed = await self._build_leaderboard_embed(
-                today,
-                all_logs,
-                view.current_challenge,
-                is_global=False,
-                compliance_data=compliance_data
+            # Build one embed with all challenge types
+            embed = discord.Embed(
+                title="🏆 Daily Leaderboard",
+                description=f"**{today.strftime('%A, %B %d, %Y')}**",
+                color=0xFFD700
             )
 
-            await channel.send(embed=embed, view=view)
+            # Add a section for each challenge type
+            for challenge_type in challenge_types:
+                # Build rankings for this challenge type
+                rankings = []
+                for discord_id, challenges in all_logs.items():
+                    if challenge_type in challenges:
+                        p = self.manager.get_participant_by_id(discord_id)
+                        if p:
+                            rankings.append({
+                                'name': p.display_name,
+                                'amount': challenges[challenge_type]['amount'],
+                                'unit': challenges[challenge_type]['unit']
+                            })
+
+                if not rankings:
+                    continue
+
+                # Sort by amount (highest first)
+                rankings.sort(key=lambda x: x['amount'], reverse=True)
+
+                # Build leaderboard text
+                medals = ["🥇", "🥈", "🥉"]
+                leaderboard_lines = []
+
+                # Show top 10
+                for idx, entry in enumerate(rankings[:10]):
+                    if idx < 3:
+                        medal = medals[idx]
+                    else:
+                        medal = f"`#{idx+1}`"
+                    leaderboard_lines.append(
+                        f"{medal} **{entry['name']}** — {entry['amount']:,} {entry['unit']}"
+                    )
+
+                # Calculate stats
+                total_amount = sum(r['amount'] for r in rankings)
+                avg_amount = total_amount // len(rankings) if rankings else 0
+
+                stats_text = (
+                    f"👥 **{len(rankings)}** participant{'s' if len(rankings) != 1 else ''}\n"
+                    f"📊 **Total:** {total_amount:,} {rankings[0]['unit']}\n"
+                    f"📈 **Average:** {avg_amount:,} {rankings[0]['unit']}"
+                )
+
+                # Add field for this challenge type
+                field_value = "\n".join(leaderboard_lines) + f"\n\n{stats_text}"
+                embed.add_field(
+                    name=f"💪 {challenge_type.title()}",
+                    value=field_value,
+                    inline=False
+                )
+
+            embed.set_footer(text="Use /log to add your progress!")
+
+            await channel.send(embed=embed)
             self._channel_post_flags.add(flag)
-            LOGGER.info("Posted interactive leaderboard to channel %s", channel_id)
+            LOGGER.info("Posted daily leaderboard to channel %s", channel_id)
         except Exception as e:
             LOGGER.warning(f"Failed to post daily leaderboard: {e}")
             LOGGER.exception("Leaderboard error details:")
             self._channel_post_flags.add(flag)
-
-    async def _build_leaderboard_embed(
-        self,
-        date_obj: date,
-        logs_data: dict,
-        challenge_type: str,
-        is_global: bool,
-        compliance_data: dict
-    ) -> discord.Embed:
-        """Build a leaderboard embed for specific challenge type and timeframe"""
-
-        # Build rankings for this challenge type
-        rankings = []
-        for discord_id, challenges in logs_data.items():
-            if challenge_type in challenges:
-                p = self.manager.get_participant_by_id(discord_id)
-                if p:
-                    amount = challenges[challenge_type]['amount']
-                    unit = challenges[challenge_type]['unit']
-                    rankings.append({
-                        'name': p.display_name,
-                        'amount': amount,
-                        'unit': unit,
-                        'discord_id': discord_id
-                    })
-
-        # Sort by amount (highest first)
-        rankings.sort(key=lambda x: x['amount'], reverse=True)
-
-        # Create embed
-        title = f"{'🌍 All-Time' if is_global else '🏆 Daily'} Leaderboard - {challenge_type.title()}"
-        description = f"**{date_obj.strftime('%A, %B %d, %Y')}**" if not is_global else "**All-Time Stats**"
-
-        embed = discord.Embed(
-            title=title,
-            description=description,
-            color=discord.Color.gold() if not is_global else discord.Color.blue()
-        )
-
-        # Add top performers
-        if rankings:
-            # Medal emojis for top 3
-            medals = ["🥇", "🥈", "🥉"]
-
-            leaderboard_lines = []
-            for idx, entry in enumerate(rankings[:10]):  # Top 10
-                medal = medals[idx] if idx < 3 else f"`#{idx+1}`"
-                leaderboard_lines.append(
-                    f"{medal} **{entry['name']}** — {entry['amount']:,} {entry['unit']}"
-                )
-
-            embed.add_field(
-                name="🏆 Top Performers",
-                value="\n".join(leaderboard_lines),
-                inline=False
-            )
-
-            # Stats summary
-            total_amount = sum(r['amount'] for r in rankings)
-            avg_amount = int(total_amount / len(rankings)) if rankings else 0
-
-            embed.add_field(
-                name="📊 Stats",
-                value=(
-                    f"**Total Participants:** {len(rankings)}\n"
-                    f"**Total {challenge_type.title()}:** {total_amount:,} {rankings[0]['unit']}\n"
-                    f"**Average:** {avg_amount:,} {rankings[0]['unit']}"
-                ),
-                inline=False
-            )
-        else:
-            embed.add_field(
-                name="👀 No Data Yet",
-                value=f"Be the first to log {challenge_type} today!",
-                inline=False
-            )
-
-        # Footer
-        footer_texts = [
-            "Use /log to add your progress!",
-            "Keep crushing those goals! 💪",
-            "Every rep counts! 🔥",
-            "Consistency is key! ⚡"
-        ]
-        embed.set_footer(text=random.choice(footer_texts))
-
-        return embed
 
     async def _post_motivation_message(self, day_key: str) -> None:
         """Post motivational message to #motivation channel"""
