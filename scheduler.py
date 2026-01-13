@@ -286,9 +286,16 @@ class ComplianceScheduler:
             except Exception as e:
                 LOGGER.debug("Reminder log check failed for %s: %s", display_name, e)
 
-        text = await self._call_gemini_with_rate_limit(MOTIVATION_PROMPT)
-        if not text:
-            text = "Keep going—you've got this!"
+        # Use simple fallback messages to conserve API quota
+        # (AI is reserved for team messages which are more impactful)
+        fallback_messages = [
+            "Keep going—you've got this!",
+            "Push through today—you're stronger than you think! 💪",
+            "One day at a time. Let's make this one count! 🔥",
+            "Your future self will thank you for not giving up today! ⚡",
+            "Progress over perfection. Get it done! 💯"
+        ]
+        text = random.choice(fallback_messages)
 
         try:
             user = self.bot.get_user(int(discord_id))
@@ -344,27 +351,16 @@ class ComplianceScheduler:
             except Exception as e:
                 LOGGER.warning(f"Failed to sync compliance roles for {discord_id}: {e}")
 
-        # Build personalized prompt for AI
-        summary = status.get("summary", "")
-        challenges_completed = status.get("completed_challenges", [])
-
-        # Build context for AI
-        context_parts = [
-            CONGRATS_PROMPT,
-            f"\nUser: {display_name}",
-            f"Completion: {summary}" if summary else "",
+        # Use variety of congrats messages (conserve AI quota for team messages)
+        congrats_messages = [
+            "Nice work—goal hit for today. Keep that streak alive!",
+            "You crushed it today! That's how it's done! 🔥",
+            "Goals completed! You showed up and delivered! 💪",
+            "Another win in the books! Keep building that momentum! ⚡",
+            "Nailed it! Your consistency is paying off! 🎯",
+            "Challenge completed! You're proving what you're made of! 💯"
         ]
-
-        # Add challenge details if available
-        if challenges_completed:
-            challenge_details = ", ".join([f"{c.get('type', 'challenge')}" for c in challenges_completed[:3]])
-            context_parts.append(f"Challenges completed: {challenge_details}")
-
-        personalized_prompt = "\n".join([p for p in context_parts if p])
-        text = await self._call_gemini_with_rate_limit(personalized_prompt)
-
-        if not text:
-            text = "Nice work—goal hit for today. Keep that streak alive!"
+        text = random.choice(congrats_messages)
 
         try:
             user = self.bot.get_user(int(discord_id))
