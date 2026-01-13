@@ -671,30 +671,150 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
             await interaction.followup.send(f"❌ {e}", ephemeral=True)
 
     # ---------------- /nutrition ----------------
-    @tree.command(name="nutrition", description="Get AI-powered nutrition advice for your fitness goals")
-    @app_commands.describe(question="Ask about nutrition, meal planning, or dietary advice")
-    async def nutrition_cmd(interaction: discord.Interaction, question: str) -> None:
-        await interaction.response.defer(ephemeral=True)
+    # Helper functions for unit conversions
+    def lbs_to_kg(lbs: float) -> float:
+        """Convert pounds to kilograms"""
+        return lbs * 0.453592
+
+    def ft_in_to_cm(feet: int, inches: int) -> float:
+        """Convert feet and inches to centimeters"""
+        total_inches = (feet * 12) + inches
+        return total_inches * 2.54
+
+    @tree.command(name="nutrition", description="Talk to your AI nutrition coach (restricted channel)")
+    @app_commands.describe(
+        message="Your message to the nutrition coach",
+        height_ft="Your height in feet (for profile setup)",
+        height_in="Your height in inches (for profile setup)",
+        weight_lbs="Your weight in pounds (for profile setup)",
+        goal="Your fitness goal (for profile setup)"
+    )
+    async def nutrition_cmd(
+        interaction: discord.Interaction,
+        message: str,
+        height_ft: Optional[int] = None,
+        height_in: Optional[int] = None,
+        weight_lbs: Optional[float] = None,
+        goal: Optional[str] = None
+    ) -> None:
+        await interaction.response.defer()
 
         try:
-            # Check if scheduler has Claude client
-            scheduler = bot.scheduler
-            if not scheduler or not scheduler.claude_client:
+            # Check channel restriction
+            nutrition_channel_id = 1458307023111323739
+            if interaction.channel_id != nutrition_channel_id:
                 await interaction.followup.send(
-                    "❌ AI nutrition advice is not available. Please contact an admin.",
+                    f"❌ Nutrition coach is only available in <#{nutrition_channel_id}>",
                     ephemeral=True
                 )
                 return
 
-            # Build nutrition prompt
-            nutrition_prompt = f"""You are a knowledgeable fitness and nutrition coach. Answer this question about nutrition, diet, or meal planning:
+            # Check if scheduler has AI
+            scheduler = bot.scheduler
+            if not scheduler or (not scheduler.claude_client and not scheduler.gemini_client):
+                await interaction.followup.send(
+                    "❌ AI nutrition coach is not available. Please contact an admin.",
+                    ephemeral=True
+                )
+                return
 
-Question: {question}
+            discord_id = str(interaction.user.id)
+            display_name = interaction.user.display_name
 
-Provide practical, evidence-based advice in 2-3 paragraphs. Be helpful and encouraging. If the question is about specific medical conditions, recommend consulting a healthcare professional."""
+            # Get or create nutrition profile from sheets
+            try:
+                profile = manager.sheets.get_all_records("NutritionProfiles")
+                user_profile = None
+                for p in profile:
+                    if str(p.get('discord_id', '')) == discord_id:
+                        user_profile = p
+                        break
+            except:
+                user_profile = None
 
-            # Call Claude AI
-            response = await scheduler._call_ai_with_rate_limit(nutrition_prompt)
+            # Update profile if new data provided
+            if height_ft is not None or height_in is not None or weight_lbs is not None or goal is not None:
+                # Convert units
+                height_cm = None
+                weight_kg = None
+
+                if height_ft is not None and height_in is not None:
+                    height_cm = ft_in_to_cm(height_ft, height_in)
+
+                if weight_lbs is not None:
+                    weight_kg = lbs_to_kg(weight_lbs)
+
+                # Update sheet
+                try:
+                    ws = manager.sheets._worksheet("NutritionProfiles")
+                    from sheets import _safe_get_all_records
+                    profiles = _safe_get_all_records(ws, expected_headers=["discord_id", "display_name", "height_cm", "weight_kg", "goal", "last_updated"])
+
+                    # Find or create row
+                    row_idx = None
+                    for idx, p in enumerate(profiles):
+                        if str(p.get('discord_id', '')) == discord_id:
+                            row_idx = idx + 2  # +2 for header and 1-indexing
+                            break
+
+                    from datetime import datetime
+                    timestamp = datetime.now().isoformat()
+
+                    if row_idx:
+                        # Update existing
+                        if height_cm:
+                            ws.update_cell(row_idx, 3, round(height_cm, 1))
+                        if weight_kg:
+                            ws.update_cell(row_idx, 4, round(weight_kg, 1))
+                        if goal:
+                            ws.update_cell(row_idx, 5, goal)
+                        ws.update_cell(row_idx, 6, timestamp)
+                    else:
+                        # Add new row
+                        ws.append_row([
+                            discord_id,
+                            display_name,
+                            round(height_cm, 1) if height_cm else "",
+                            round(weight_kg, 1) if weight_kg else "",
+                            goal if goal else "",
+                            timestamp
+                        ])
+
+                    await interaction.followup.send(
+                        f"✅ **Profile Updated**\n"
+                        f"Height: {height_ft}'{height_in}\" ({round(height_cm, 1)} cm)\n"
+                        f"Weight: {weight_lbs} lbs ({round(weight_kg, 1)} kg)\n"
+                        f"Goal: {goal if goal else 'Not set'}\n\n"
+                        f"Now ask your nutrition question!",
+                        ephemeral=True
+                    )
+                    return
+                except Exception as e:
+                    LOGGER.error(f"Failed to update nutrition profile: {e}")
+                    await interaction.followup.send(f"❌ Failed to update profile: {e}", ephemeral=True)
+                    return
+
+            # Build context from profile
+            context = ""
+            if user_profile:
+                height = user_profile.get('height_cm', '')
+                weight = user_profile.get('weight_kg', '')
+                user_goal = user_profile.get('goal', '')
+
+                if height or weight or user_goal:
+                    context = f"\nUser Profile:\n- Height: {height} cm\n- Weight: {weight} kg\n- Goal: {user_goal}\n"
+
+            # Build nutrition coach prompt
+            nutrition_prompt = f"""You are an expert fitness nutrition coach specializing in evidence-based nutrition advice for athletes and fitness enthusiasts. You provide personalized, practical advice.
+
+{context}
+
+User's Question: {message}
+
+Provide a detailed, personalized response in 2-3 paragraphs. Consider their profile if available. Focus on practical, actionable advice. If discussing specific medical conditions, recommend consulting a healthcare professional. Be encouraging and supportive."""
+
+            # Call AI with fallback chain
+            response, provider = await scheduler._call_ai_with_rate_limit(nutrition_prompt)
 
             if not response:
                 await interaction.followup.send(
@@ -703,14 +823,15 @@ Provide practical, evidence-based advice in 2-3 paragraphs. Be helpful and encou
                 )
                 return
 
-            # Send response
+            # Send response with provider label
             await interaction.followup.send(
-                f"🥗 **Nutrition Advice**\n\n{response}\n\n*Note: This is AI-generated advice. Consult a healthcare professional for personalized medical guidance.*",
-                ephemeral=True
+                f"🥗 **Nutrition Coach** _{provider}_\n\n{response}\n\n*Note: This is AI-generated advice. Consult a healthcare professional for personalized medical guidance.*"
             )
 
         except Exception as e:
             LOGGER.error(f"Error in nutrition command: {e}")
+            import traceback
+            LOGGER.error(traceback.format_exc())
             await interaction.followup.send(f"❌ An error occurred: {e}", ephemeral=True)
 
     tree.add_command(challenge_group)

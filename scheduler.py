@@ -15,6 +15,11 @@ try:
 except Exception:  # pragma: no cover
     anthropic = None
 
+try:
+    from google import genai  # type: ignore
+except Exception:  # pragma: no cover
+    genai = None
+
 from .timezones import normalize_timezone
 from .role_sync import sync_compliance_roles
 
@@ -81,8 +86,9 @@ class ComplianceScheduler:
         self._daily_checkin_time = _parse_hhmm(self.app_config.challenge.daily_checkin_time, dtime(6, 0))
         self._leaderboard_time = _parse_hhmm(self.app_config.challenge.leaderboard_time, dtime(20, 0))
 
-        # Claude AI with rate limiting
+        # AI with fallback: Claude → Gemini → Local
         self.claude_client = None
+        self.gemini_client = None
         self._ai_last_call = 0.0  # Track last API call time
         self._ai_min_interval = 1.0  # Minimum 1 second between calls
 
@@ -90,17 +96,26 @@ class ComplianceScheduler:
         self._compliance_cache = {}  # {day_key: {compliance_data, timestamp}}
         self._compliance_cache_ttl = 300  # 5 minutes cache
 
-        api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
-        if not api_key:
-            LOGGER.warning("❌ ANTHROPIC_API_KEY not set; AI messages will use fallbacks")
-        elif not anthropic:
-            LOGGER.warning("❌ anthropic package not installed; AI messages will use fallbacks")
-        else:
+        # Try to configure Claude (primary)
+        claude_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+        if claude_key and anthropic:
             try:
-                self.claude_client = anthropic.Anthropic(api_key=api_key)
-                LOGGER.info("✅ Claude AI configured successfully")
+                self.claude_client = anthropic.Anthropic(api_key=claude_key)
+                LOGGER.info("✅ Claude AI configured (primary)")
             except Exception as e:
                 LOGGER.warning("❌ Failed to configure Claude: %s", e)
+
+        # Try to configure Gemini (backup)
+        gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
+        if gemini_key and genai:
+            try:
+                self.gemini_client = genai.Client(api_key=gemini_key)
+                LOGGER.info("✅ Gemini AI configured (backup)")
+            except Exception as e:
+                LOGGER.warning("❌ Failed to configure Gemini: %s", e)
+
+        if not self.claude_client and not self.gemini_client:
+            LOGGER.warning("⚠️ No AI configured - will use local fallback messages")
 
     def _get_cached_compliance(self, day: date):
         """Get cached compliance data or fetch and cache if expired"""
@@ -132,11 +147,11 @@ class ComplianceScheduler:
             LOGGER.error(f"Failed to fetch compliance data: {e}")
             return {}
 
-    async def _call_ai_with_rate_limit(self, prompt: str) -> Optional[str]:
-        """Call Claude API with rate limiting"""
-        if not self.claude_client:
-            return None
-
+    async def _call_ai_with_rate_limit(self, prompt: str, fallback_messages: Optional[List[str]] = None) -> Tuple[Optional[str], str]:
+        """
+        Call AI with fallback chain: Claude → Gemini → Local
+        Returns: (text, provider) where provider is "Claude", "Gemini", or "Fallback"
+        """
         # Rate limiting: ensure minimum interval between calls
         import time
         now = time.time()
@@ -144,28 +159,44 @@ class ComplianceScheduler:
         if time_since_last < self._ai_min_interval:
             await asyncio.sleep(self._ai_min_interval - time_since_last)
 
-        try:
-            self._ai_last_call = time.time()
-
-            # Call Claude API
-            response = await asyncio.to_thread(
-                lambda: self.claude_client.messages.create(
-                    model="claude-3-5-sonnet-20241022",
-                    max_tokens=200,
-                    messages=[
-                        {"role": "user", "content": prompt}
-                    ]
+        # Try Claude first (primary)
+        if self.claude_client:
+            try:
+                self._ai_last_call = time.time()
+                response = await asyncio.to_thread(
+                    lambda: self.claude_client.messages.create(
+                        model="claude-3-5-sonnet-20241022",
+                        max_tokens=200,
+                        messages=[{"role": "user", "content": prompt}]
+                    )
                 )
-            )
+                if response.content and len(response.content) > 0:
+                    text = response.content[0].text.strip()
+                    if text:
+                        return (text, "Claude")
+            except Exception as e:
+                LOGGER.debug(f"Claude API call failed: {e}")
 
-            # Extract text from response
-            if response.content and len(response.content) > 0:
-                return response.content[0].text.strip()
-            return None
+        # Try Gemini backup
+        if self.gemini_client:
+            try:
+                self._ai_last_call = time.time()
+                response = await asyncio.to_thread(
+                    self.gemini_client.models.generate_content,
+                    model='gemini-2.0-flash-exp',
+                    contents=prompt
+                )
+                text = (response.text or "").strip()
+                if text:
+                    return (text, "Gemini")
+            except Exception as e:
+                LOGGER.debug(f"Gemini API call failed: {e}")
 
-        except Exception as e:
-            LOGGER.debug(f"Claude API call failed: {e}")
-            return None
+        # Local fallback
+        if fallback_messages:
+            return (random.choice(fallback_messages), "Fallback")
+
+        return (None, "None")
 
     def start(self) -> None:
         if self.task is None:
@@ -505,18 +536,19 @@ Keep it under 50 words, motivational but not cheesy. Include:
 
 Make it feel fresh, authentic, and pumped up. No generic quotes."""
 
-            ai_message = await self._call_ai_with_rate_limit(daily_checkin_prompt)
+            # Fallback messages
+            fallback_messages = [
+                f"☀️ **Rise and grind, challengers!**\n\nIt's {day_of_week}—time to turn goals into action. Use `/log` to record your progress.\n\n💪 Let's make today legendary!",
+                f"⚡ **{day_of_week} energy incoming!**\n\nYour body is capable of amazing things. Show it what you've got today! Don't forget to `/log` your work.\n\n🔥 Push harder than yesterday!",
+                f"🚀 **{day_of_week}, let's fly!**\n\nEvery rep counts. Every set matters. Track your journey with `/log`.\n\n💯 Commitment over comfort!",
+                f"💥 **Happy {day_of_week}, warriors!**\n\nThe only bad workout is the one you didn't do. Get moving and `/log` that progress!\n\n🎯 Consistency builds champions!",
+            ]
+
+            ai_message, provider = await self._call_ai_with_rate_limit(daily_checkin_prompt, fallback_messages)
 
             if ai_message:
-                message = f"☀️ **Daily Check-In**\n\n{ai_message}"
+                message = f"☀️ **Daily Check-In** _{provider}_\n\n{ai_message}"
             else:
-                # Fallback messages
-                fallback_messages = [
-                    f"☀️ **Rise and grind, challengers!**\n\nIt's {day_of_week}—time to turn goals into action. Use `/log` to record your progress.\n\n💪 Let's make today legendary!",
-                    f"⚡ **{day_of_week} energy incoming!**\n\nYour body is capable of amazing things. Show it what you've got today! Don't forget to `/log` your work.\n\n🔥 Push harder than yesterday!",
-                    f"🚀 **{day_of_week}, let's fly!**\n\nEvery rep counts. Every set matters. Track your journey with `/log`.\n\n💯 Commitment over comfort!",
-                    f"💥 **Happy {day_of_week}, warriors!**\n\nThe only bad workout is the one you didn't do. Get moving and `/log` that progress!\n\n🎯 Consistency builds champions!",
-                ]
                 message = random.choice(fallback_messages)
 
             await channel.send(message)
@@ -870,21 +902,23 @@ Make it feel fresh, authentic, and pumped up. No generic quotes."""
                 return
 
             # Try to get AI-generated team motivation message
-            text = await self._call_ai_with_rate_limit(TEAM_MOTIVATION_PROMPT)
-            if not text:
-                messages = [
-                    "💪 Together we're stronger! Every person who shows up today makes our team better. Let's push each other to greatness!",
-                    "🔥 This team doesn't quit! We're all in this together—let's make today count as a unit!",
-                    "⚡ When one of us wins, we all win. Support each other, hold each other accountable, and let's crush these goals together!",
-                    "🎯 Great teams are built one rep at a time. Show up for yourself, show up for the team. We've got this!",
-                    "💯 The strength of the team is each individual member. The strength of each member is the team. Let's make today legendary!",
-                    "🏆 Accountability + Support = Unstoppable. That's who we are. Let's prove it today, challengers!",
-                    "🚀 We're not just individuals working out—we're a squad pushing limits together. Time to show what we're made of!",
-                    "💥 Your effort inspires others. Others' dedication fuels you. That's the power of this team. Let's go!",
-                ]
-                text = random.choice(messages)
+            messages = [
+                "💪 Together we're stronger! Every person who shows up today makes our team better. Let's push each other to greatness!",
+                "🔥 This team doesn't quit! We're all in this together—let's make today count as a unit!",
+                "⚡ When one of us wins, we all win. Support each other, hold each other accountable, and let's crush these goals together!",
+                "🎯 Great teams are built one rep at a time. Show up for yourself, show up for the team. We've got this!",
+                "💯 The strength of the team is each individual member. The strength of each member is the team. Let's make today legendary!",
+                "🏆 Accountability + Support = Unstoppable. That's who we are. Let's prove it today, challengers!",
+                "🚀 We're not just individuals working out—we're a squad pushing limits together. Time to show what we're made of!",
+                "💥 Your effort inspires others. Others' dedication fuels you. That's the power of this team. Let's go!",
+            ]
 
-            await channel.send(f"💪 **Daily Motivation**\n\n{text}")
+            text, provider = await self._call_ai_with_rate_limit(TEAM_MOTIVATION_PROMPT, messages)
+
+            if text:
+                await channel.send(f"💪 **Daily Motivation** _{provider}_\n\n{text}")
+            else:
+                await channel.send(f"💪 **Daily Motivation**\n\n{random.choice(messages)}")
             self._channel_post_flags.add(flag)
             LOGGER.info("Posted motivation message to channel %s", channel_id)
         except Exception as e:
