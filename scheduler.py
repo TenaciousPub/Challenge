@@ -15,6 +15,11 @@ try:
 except Exception:  # pragma: no cover
     genai = None
 
+try:
+    from anthropic import Anthropic  # type: ignore
+except Exception:  # pragma: no cover
+    Anthropic = None
+
 from .timezones import normalize_timezone
 from .role_sync import sync_compliance_roles
 
@@ -38,6 +43,38 @@ CONGRATS_PROMPT = (
     "Use the details provided to make it specific and encouraging. "
     "Keep it upbeat, genuine, and not cheesy. Vary your message each time."
 )
+
+NUTRITION_PROMPT_TEMPLATE = """You are an expert fitness nutrition coach with deep knowledge of sports nutrition, body composition, and performance optimization.
+
+Client Profile:
+- Gender: {gender}
+- Height: {height_cm} cm ({height_ft})
+- Weight: {weight_kg} kg ({weight_lbs} lbs)
+- BMI: {bmi:.1f}
+- Activity Level: High (daily fitness challenge participant)
+- Goal: {goal}
+
+Your Role:
+Provide personalized, evidence-based nutrition advice tailored to this client's fitness goals. Focus on:
+1. Optimal macronutrient ratios for their body composition and activity level
+2. Daily calorie targets (maintenance, cutting, or bulking as appropriate)
+3. Meal timing strategies for performance and recovery
+4. Hydration recommendations
+5. Supplement suggestions (if applicable)
+6. Specific food recommendations
+
+Guidelines:
+- Be encouraging and supportive
+- Use metric and imperial units
+- Provide actionable, practical advice
+- Consider their BMI and health implications
+- Focus on sustainable, healthy approaches
+- Tailor advice specifically to their stated goal
+- Keep responses concise but comprehensive (3-5 paragraphs)
+
+Client Question/Request: {user_question}
+
+Provide your professional nutrition coaching response:"""
 
 
 def _parse_hhmm(value: str, fallback: dtime) -> dtime:
@@ -81,14 +118,29 @@ class ComplianceScheduler:
         self._daily_checkin_time = _parse_hhmm(self.app_config.challenge.daily_checkin_time, dtime(6, 0))
         self._leaderboard_time = _parse_hhmm(self.app_config.challenge.leaderboard_time, dtime(20, 0))
 
-        # Gemini with rate limiting
-        self.gemini_client = None
-        self._gemini_last_call = 0.0  # Track last API call time
-        self._gemini_min_interval = 5.0  # Minimum 5 seconds between calls (free tier: 15 req/min)
-
         # Compliance cache to prevent excessive Google Sheets API reads
         self._compliance_cache = {}  # {day_key: {compliance_data, timestamp}}
         self._compliance_cache_ttl = 300  # 5 minutes cache
+
+        # Claude (primary)
+        self.claude_client = None
+        claude_api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+        if not claude_api_key:
+            LOGGER.warning("❌ ANTHROPIC_API_KEY not set; Claude DMs will use fallbacks")
+        elif not Anthropic:
+            LOGGER.warning("❌ anthropic library not installed; Claude DMs will use fallbacks")
+        else:
+            try:
+                self.claude_client = Anthropic(api_key=claude_api_key)
+                LOGGER.info("✅ Claude configured successfully for DMs")
+            except Exception as e:
+                LOGGER.warning("❌ Failed to configure Claude: %s", e)
+
+        # Gemini (backup) with rate limiting
+        self.gemini_client = None
+        self.gemini_model = None
+        self._gemini_last_call = 0.0  # Track last API call time
+        self._gemini_min_interval = 5.0  # Minimum 5 seconds between calls (free tier: 15 req/min)
 
         api_key = os.getenv("GEMINI_API_KEY", "").strip()
         if not api_key:
@@ -177,6 +229,134 @@ class ComplianceScheduler:
     def start(self) -> None:
         if self.task is None:
             self.task = asyncio.create_task(self.loop())
+
+    async def _generate_ai_message(self, prompt: str, fallback: str) -> Tuple[str, str]:
+        """
+        Generate AI message with fallback chain: Claude → Gemini → Local string.
+
+        Args:
+            prompt: The prompt to send to the AI provider
+            fallback: The local fallback string if all providers fail
+
+        Returns:
+            Tuple of (message_text, provider_name)
+        """
+        # Try Claude first
+        if self.claude_client:
+            try:
+                response = await asyncio.to_thread(
+                    self.claude_client.messages.create,
+                    model="claude-3-5-sonnet-20241022",
+                    max_tokens=150,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                if response.content and len(response.content) > 0:
+                    text = response.content[0].text.strip()
+                    if text:
+                        LOGGER.debug("✅ Claude generated message successfully")
+                        return (text, "Claude")
+            except Exception as e:
+                LOGGER.debug("Claude generation failed, trying Gemini: %s", e)
+
+        # Try Gemini as backup
+        if self.gemini_model:
+            try:
+                resp = await asyncio.to_thread(self.gemini_model.generate_content, prompt)
+                text = (getattr(resp, "text", "") or "").strip()
+                if text:
+                    LOGGER.debug("✅ Gemini generated message successfully")
+                    return (text, "Gemini")
+            except Exception as e:
+                LOGGER.debug("Gemini generation failed, using local fallback: %s", e)
+
+        # Use local fallback
+        LOGGER.debug("Using local fallback message")
+        return (fallback, "Local")
+
+    async def generate_nutrition_advice(
+        self,
+        *,
+        gender: Optional[str],
+        height_cm: float,
+        weight_kg: float,
+        nutrition_goal: Optional[str],
+        user_question: str,
+    ) -> Tuple[str, str]:
+        """
+        Generate personalized nutrition advice using AI with fallback chain.
+
+        Args:
+            gender: User's gender (male/female/other)
+            height_cm: Height in centimeters
+            weight_kg: Weight in kilograms
+            nutrition_goal: User's fitness/nutrition goal
+            user_question: User's specific question or request
+
+        Returns:
+            Tuple of (advice_text, provider_name)
+        """
+        # Calculate BMI and conversions
+        height_m = height_cm / 100
+        bmi = weight_kg / (height_m * height_m)
+
+        # Convert to imperial
+        height_inches = height_cm / 2.54
+        height_ft = f"{int(height_inches // 12)}'{int(height_inches % 12)}\""
+        weight_lbs = weight_kg * 2.20462
+
+        # Format the prompt
+        prompt = NUTRITION_PROMPT_TEMPLATE.format(
+            gender=gender or "not specified",
+            height_cm=height_cm,
+            height_ft=height_ft,
+            weight_kg=weight_kg,
+            weight_lbs=weight_lbs,
+            bmi=bmi,
+            goal=nutrition_goal or "general fitness",
+            user_question=user_question,
+        )
+
+        fallback = (
+            f"Based on your profile (Height: {height_cm}cm, Weight: {weight_kg}kg, BMI: {bmi:.1f}), "
+            f"here are some general fitness nutrition guidelines:\n\n"
+            f"1. **Calorie Target**: Aim for 2000-2500 calories for maintenance with high activity.\n"
+            f"2. **Protein**: 1.6-2.2g per kg body weight ({int(weight_kg * 1.6)}-{int(weight_kg * 2.2)}g daily).\n"
+            f"3. **Hydration**: Drink 3-4 liters of water daily, more on workout days.\n"
+            f"4. **Timing**: Eat protein and carbs within 2 hours post-workout for recovery.\n\n"
+            f"For personalized advice, consider consulting a registered dietitian."
+        )
+
+        # Try Claude first (with higher max_tokens for detailed advice)
+        if self.claude_client:
+            try:
+                response = await asyncio.to_thread(
+                    self.claude_client.messages.create,
+                    model="claude-3-5-sonnet-20241022",
+                    max_tokens=1000,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                if response.content and len(response.content) > 0:
+                    text = response.content[0].text.strip()
+                    if text:
+                        LOGGER.debug("✅ Claude generated nutrition advice successfully")
+                        return (text, "Claude")
+            except Exception as e:
+                LOGGER.debug("Claude nutrition generation failed, trying Gemini: %s", e)
+
+        # Try Gemini as backup
+        if self.gemini_model:
+            try:
+                resp = await asyncio.to_thread(self.gemini_model.generate_content, prompt)
+                text = (getattr(resp, "text", "") or "").strip()
+                if text:
+                    LOGGER.debug("✅ Gemini generated nutrition advice successfully")
+                    return (text, "Gemini")
+            except Exception as e:
+                LOGGER.debug("Gemini nutrition generation failed, using local fallback: %s", e)
+
+        # Use local fallback
+        LOGGER.debug("Using local fallback for nutrition advice")
+        return (fallback, "Local")
 
     async def loop(self) -> None:
         await self.bot.wait_until_ready()
@@ -286,9 +466,10 @@ class ComplianceScheduler:
             except Exception as e:
                 LOGGER.debug("Reminder log check failed for %s: %s", display_name, e)
 
-        text = await self._call_gemini_with_rate_limit(MOTIVATION_PROMPT)
-        if not text:
-            text = "Keep going—you've got this!"
+        text, provider = await self._generate_ai_message(
+            prompt=MOTIVATION_PROMPT,
+            fallback="Keep going—you've got this!"
+        )
 
         try:
             user = self.bot.get_user(int(discord_id))
@@ -296,7 +477,7 @@ class ComplianceScheduler:
                 self._sent_flags.add(flag)
                 return
             prefix = "💪 Check-in" if window == "motivation" else "⏰ Reminder"
-            await user.send(f"{prefix}: {text}")
+            await user.send(f"{prefix} ({provider}): {text}")
             self._sent_flags.add(flag)
         except Exception as e:
             LOGGER.warning("Failed to DM %s to %s: %s", window, display_name, e)
@@ -361,15 +542,16 @@ class ComplianceScheduler:
             context_parts.append(f"Challenges completed: {challenge_details}")
 
         personalized_prompt = "\n".join([p for p in context_parts if p])
-        text = await self._call_gemini_with_rate_limit(personalized_prompt)
 
-        if not text:
-            text = "Nice work—goal hit for today. Keep that streak alive!"
+        text, provider = await self._generate_ai_message(
+            prompt=personalized_prompt,
+            fallback="Nice work—goal hit for today. Keep that streak alive!"
+        )
 
         try:
             user = self.bot.get_user(int(discord_id))
             if user:
-                await user.send(f"🎉 {text}")
+                await user.send(f"🎉 ({provider}): {text}")
         except Exception as e:
             LOGGER.warning("Failed to DM congrats to %s: %s", display_name, e)
 

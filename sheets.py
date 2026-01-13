@@ -156,6 +156,9 @@ class GoogleSheetsService:
             "last_punished_on",
             "last_congrats_on",
             "preferred_challenge_id",
+            "height_cm",
+            "weight_kg",
+            "nutrition_goal",
         ]
         headers = _strip_headers(ws.row_values(1))
         if not headers:
@@ -187,6 +190,9 @@ class GoogleSheetsService:
             "last_punished_on",
             "last_congrats_on",
             "preferred_challenge_id",
+            "height_cm",
+            "weight_kg",
+            "nutrition_goal",
         ]
         rows = _safe_get_all_records(ws, expected_headers=expected_headers)
 
@@ -201,6 +207,25 @@ class GoogleSheetsService:
                     except Exception:
                         joined_on_val = None
 
+                # Parse height and weight
+                height_cm_val: Optional[float] = None
+                weight_kg_val: Optional[float] = None
+                try:
+                    height_raw = str(r.get("height_cm") or "").strip()
+                    if height_raw:
+                        height_cm_val = float(height_raw)
+                except Exception:
+                    pass
+                try:
+                    weight_raw = str(r.get("weight_kg") or "").strip()
+                    if weight_raw:
+                        weight_kg_val = float(weight_raw)
+                except Exception:
+                    pass
+
+                # Parse nutrition goal
+                nutrition_goal_val = str(r.get("nutrition_goal") or "").strip() or None
+
                 participants.append(
                     Participant(
                         discord_id=str(r.get("discord_id", "")).strip(),
@@ -213,6 +238,9 @@ class GoogleSheetsService:
                         last_punished_on=str(r.get("last_punished_on") or "").strip() or None,
                         last_congrats_on=str(r.get("last_congrats_on") or "").strip() or None,
                         preferred_challenge_id=str(r.get("preferred_challenge_id") or "").strip() or None,
+                        height_cm=height_cm_val,
+                        weight_kg=weight_kg_val,
+                        nutrition_goal=nutrition_goal_val,
                     )
                 )
             except Exception as e:
@@ -235,6 +263,9 @@ class GoogleSheetsService:
                 participant.last_punished_on or "",
                 participant.last_congrats_on or "",
                 participant.preferred_challenge_id or "",
+                str(participant.height_cm) if participant.height_cm is not None else "",
+                str(participant.weight_kg) if participant.weight_kg is not None else "",
+                participant.nutrition_goal or "",
             ],
             value_input_option="USER_ENTERED",
         )
@@ -245,7 +276,7 @@ class GoogleSheetsService:
 
         headers = _strip_headers(ws.row_values(1))
         expected_headers = [
-            "discord_id","discord_tag","display_name","gender","is_disabled","timezone","joined_on","last_punished_on","last_congrats_on","preferred_challenge_id"
+            "discord_id","discord_tag","display_name","gender","is_disabled","timezone","joined_on","last_punished_on","last_congrats_on","preferred_challenge_id","height_cm","weight_kg","nutrition_goal"
         ]
 
         if _headers_have_blanks_or_dupes(headers):
