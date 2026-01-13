@@ -11,9 +11,9 @@ import discord
 import pytz
 
 try:
-    from google import genai  # type: ignore
+    import anthropic  # type: ignore
 except Exception:  # pragma: no cover
-    genai = None
+    anthropic = None
 
 from .timezones import normalize_timezone
 from .role_sync import sync_compliance_roles
@@ -81,26 +81,26 @@ class ComplianceScheduler:
         self._daily_checkin_time = _parse_hhmm(self.app_config.challenge.daily_checkin_time, dtime(6, 0))
         self._leaderboard_time = _parse_hhmm(self.app_config.challenge.leaderboard_time, dtime(20, 0))
 
-        # Gemini with rate limiting
-        self.gemini_client = None
-        self._gemini_last_call = 0.0  # Track last API call time
-        self._gemini_min_interval = 5.0  # Minimum 5 seconds between calls (free tier: 15 req/min)
+        # Claude AI with rate limiting
+        self.claude_client = None
+        self._ai_last_call = 0.0  # Track last API call time
+        self._ai_min_interval = 1.0  # Minimum 1 second between calls
 
         # Compliance cache to prevent excessive Google Sheets API reads
         self._compliance_cache = {}  # {day_key: {compliance_data, timestamp}}
         self._compliance_cache_ttl = 300  # 5 minutes cache
 
-        api_key = os.getenv("GEMINI_API_KEY", "").strip()
+        api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
         if not api_key:
-            LOGGER.warning("❌ GEMINI_API_KEY not set; Gemini DMs will use fallbacks")
-        elif not genai:
-            LOGGER.warning("❌ google-genai not installed; Gemini DMs will use fallbacks")
+            LOGGER.warning("❌ ANTHROPIC_API_KEY not set; AI messages will use fallbacks")
+        elif not anthropic:
+            LOGGER.warning("❌ anthropic package not installed; AI messages will use fallbacks")
         else:
             try:
-                self.gemini_client = genai.Client(api_key=api_key)
-                LOGGER.info("✅ Gemini configured successfully for DMs")
+                self.claude_client = anthropic.Anthropic(api_key=api_key)
+                LOGGER.info("✅ Claude AI configured successfully")
             except Exception as e:
-                LOGGER.warning("❌ Failed to configure Gemini: %s", e)
+                LOGGER.warning("❌ Failed to configure Claude: %s", e)
 
     def _get_cached_compliance(self, day: date):
         """Get cached compliance data or fetch and cache if expired"""
@@ -132,47 +132,40 @@ class ComplianceScheduler:
             LOGGER.error(f"Failed to fetch compliance data: {e}")
             return {}
 
-    async def _call_gemini_with_rate_limit(self, prompt: str) -> Optional[str]:
-        """Call Gemini API with rate limiting and retry logic for 429 errors"""
-        if not self.gemini_client:
+    async def _call_ai_with_rate_limit(self, prompt: str) -> Optional[str]:
+        """Call Claude API with rate limiting"""
+        if not self.claude_client:
             return None
 
         # Rate limiting: ensure minimum interval between calls
         import time
         now = time.time()
-        time_since_last = now - self._gemini_last_call
-        if time_since_last < self._gemini_min_interval:
-            await asyncio.sleep(self._gemini_min_interval - time_since_last)
+        time_since_last = now - self._ai_last_call
+        if time_since_last < self._ai_min_interval:
+            await asyncio.sleep(self._ai_min_interval - time_since_last)
 
-        # Retry logic with exponential backoff for 429 errors
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                self._gemini_last_call = time.time()
-                resp = await asyncio.to_thread(
-                    self.gemini_client.models.generate_content,
-                    model='gemini-2.0-flash-exp',
-                    contents=prompt
+        try:
+            self._ai_last_call = time.time()
+
+            # Call Claude API
+            response = await asyncio.to_thread(
+                lambda: self.claude_client.messages.create(
+                    model="claude-3-5-sonnet-20241022",
+                    max_tokens=200,
+                    messages=[
+                        {"role": "user", "content": prompt}
+                    ]
                 )
-                return (resp.text or "").strip()
-            except Exception as e:
-                error_str = str(e)
-                # Check if it's a 429 rate limit error
-                if "429" in error_str or "Too Many Requests" in error_str:
-                    if attempt < max_retries - 1:
-                        # Exponential backoff: 10s, 20s, 40s
-                        wait_time = 10 * (2 ** attempt)
-                        LOGGER.warning(f"Gemini API rate limited (429), retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})")
-                        await asyncio.sleep(wait_time)
-                        continue
-                    else:
-                        LOGGER.warning(f"Gemini API rate limited after {max_retries} retries, giving up")
-                        return None
-                else:
-                    LOGGER.debug(f"Gemini API call failed: {e}")
-                    return None
+            )
 
-        return None
+            # Extract text from response
+            if response.content and len(response.content) > 0:
+                return response.content[0].text.strip()
+            return None
+
+        except Exception as e:
+            LOGGER.debug(f"Claude API call failed: {e}")
+            return None
 
     def start(self) -> None:
         if self.task is None:
@@ -512,7 +505,7 @@ Keep it under 50 words, motivational but not cheesy. Include:
 
 Make it feel fresh, authentic, and pumped up. No generic quotes."""
 
-            ai_message = await self._call_gemini_with_rate_limit(daily_checkin_prompt)
+            ai_message = await self._call_ai_with_rate_limit(daily_checkin_prompt)
 
             if ai_message:
                 message = f"☀️ **Daily Check-In**\n\n{ai_message}"
@@ -877,7 +870,7 @@ Make it feel fresh, authentic, and pumped up. No generic quotes."""
                 return
 
             # Try to get AI-generated team motivation message
-            text = await self._call_gemini_with_rate_limit(TEAM_MOTIVATION_PROMPT)
+            text = await self._call_ai_with_rate_limit(TEAM_MOTIVATION_PROMPT)
             if not text:
                 messages = [
                     "💪 Together we're stronger! Every person who shows up today makes our team better. Let's push each other to greatness!",

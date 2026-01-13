@@ -670,6 +670,49 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
         except Exception as e:
             await interaction.followup.send(f"❌ {e}", ephemeral=True)
 
+    # ---------------- /nutrition ----------------
+    @tree.command(name="nutrition", description="Get AI-powered nutrition advice for your fitness goals")
+    @app_commands.describe(question="Ask about nutrition, meal planning, or dietary advice")
+    async def nutrition_cmd(interaction: discord.Interaction, question: str) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            # Check if scheduler has Claude client
+            scheduler = bot.scheduler
+            if not scheduler or not scheduler.claude_client:
+                await interaction.followup.send(
+                    "❌ AI nutrition advice is not available. Please contact an admin.",
+                    ephemeral=True
+                )
+                return
+
+            # Build nutrition prompt
+            nutrition_prompt = f"""You are a knowledgeable fitness and nutrition coach. Answer this question about nutrition, diet, or meal planning:
+
+Question: {question}
+
+Provide practical, evidence-based advice in 2-3 paragraphs. Be helpful and encouraging. If the question is about specific medical conditions, recommend consulting a healthcare professional."""
+
+            # Call Claude AI
+            response = await scheduler._call_ai_with_rate_limit(nutrition_prompt)
+
+            if not response:
+                await interaction.followup.send(
+                    "❌ Failed to generate nutrition advice. Please try again later.",
+                    ephemeral=True
+                )
+                return
+
+            # Send response
+            await interaction.followup.send(
+                f"🥗 **Nutrition Advice**\n\n{response}\n\n*Note: This is AI-generated advice. Consult a healthcare professional for personalized medical guidance.*",
+                ephemeral=True
+            )
+
+        except Exception as e:
+            LOGGER.error(f"Error in nutrition command: {e}")
+            await interaction.followup.send(f"❌ An error occurred: {e}", ephemeral=True)
+
     tree.add_command(challenge_group)
     tree.add_command(admin_group)
     tree.add_command(dayoff_group)

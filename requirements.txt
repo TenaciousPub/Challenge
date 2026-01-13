@@ -9,4 +9,4 @@ google-auth>=2.23.4
 pytz>=2023.3
 
 # AI for motivation messages
-google-genai>=1.0.0
+anthropic>=0.18.0
