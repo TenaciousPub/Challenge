@@ -76,10 +76,44 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
             await interaction.followup.send(f"❌ {e}", ephemeral=True)
 
     # ---------------- /log ----------------
+    # Helper function to resolve challenge ID or type
+    def _resolve_challenge_reference(discord_id: str, reference: str) -> Optional[str]:
+        """
+        Resolve a challenge reference to a challenge_id.
+        Reference can be:
+        - An exact challenge_id (e.g., "c_a72893")
+        - A challenge type (e.g., "pushups", "plank")
+
+        Returns challenge_id or None if not found
+        """
+        reference = reference.strip().lower()
+
+        # Get all active challenges for this user
+        challenges = manager.list_challenges(discord_id, active_only=True)
+
+        if not challenges:
+            return None
+
+        # First check if it's an exact challenge_id match
+        for ch in challenges:
+            if ch.challenge_id == reference:
+                return ch.challenge_id
+
+        # If not, treat it as a challenge type
+        matching = [ch for ch in challenges if ch.challenge_type.lower() == reference]
+
+        if len(matching) == 1:
+            return matching[0].challenge_id
+        elif len(matching) > 1:
+            # Multiple challenges of same type - return None and let caller handle error
+            return None
+
+        return None
+
     @tree.command(name="log", description="Log progress for today (or a specific day)")
     @app_commands.describe(
         amount="How many reps/seconds/steps you did",
-        challenge_id="Which challenge to log (optional if you set a default)",
+        challenge_id="Challenge ID or type (e.g., 'c_a72893' or 'pushups')",
         log_date="YYYY-MM-DD (optional; defaults to today in YOUR timezone)",
         workout_bonus="Optional bonus amount",
         notes="Optional note",
@@ -109,10 +143,34 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
             else:
                 d = datetime.now(tz).date()
 
-            cid = (challenge_id or "").strip() or manager.resolve_default_challenge_id(p)
-            # If they still have no challenge id, allow a legacy log (pushups) so the bot stays usable
-            if not cid:
-                cid = None
+            # Resolve challenge ID or type
+            if challenge_id:
+                cid = _resolve_challenge_reference(p.discord_id, challenge_id)
+                if not cid:
+                    # Check if they have multiple challenges of the same type
+                    challenges = manager.list_challenges(p.discord_id, active_only=True)
+                    matching_type = [ch for ch in challenges if ch.challenge_type.lower() == challenge_id.lower()]
+
+                    if len(matching_type) > 1:
+                        # Show available challenge IDs for this type
+                        ids = ", ".join([f"`{ch.challenge_id}` ({ch.daily_target} {ch.unit})" for ch in matching_type])
+                        await interaction.followup.send(
+                            f"❌ You have multiple **{challenge_id}** challenges. Please specify which one:\n{ids}",
+                            ephemeral=True
+                        )
+                        return
+                    else:
+                        await interaction.followup.send(
+                            f"❌ No active challenge found for `{challenge_id}`. Use `/challenge list` to see your challenges.",
+                            ephemeral=True
+                        )
+                        return
+            else:
+                # Use default challenge if no reference provided
+                cid = manager.resolve_default_challenge_id(p)
+                # If they still have no challenge id, allow a legacy log (pushups) so the bot stays usable
+                if not cid:
+                    cid = None
 
             manager.record_amount(
                 participant_id=p.discord_id,
@@ -126,9 +184,18 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
             # Note: Role syncing is handled by the scheduler when checking compliance
             # to avoid excessive Google Sheets API reads during high-traffic periods
 
+            # Get challenge details for better feedback
+            challenge_name = "legacy log"
+            if cid:
+                challenges = manager.list_challenges(p.discord_id, active_only=True)
+                matching = [ch for ch in challenges if ch.challenge_id == cid]
+                if matching:
+                    ch = matching[0]
+                    challenge_name = f"{ch.challenge_type} ({ch.daily_target} {ch.unit})"
+
             await interaction.followup.send(
                 f"✅ Logged **{amount}** for **{d.isoformat()}**"
-                + (f" (challenge: `{cid}`)" if cid else " (legacy log)"),
+                + (f" - {challenge_name}" if challenge_name else ""),
                 ephemeral=True,
             )
         except Exception as e:
@@ -181,17 +248,21 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
                 return
 
             default_id = manager.resolve_default_challenge_id(p)
-            lines = []
+            lines = ["**Your Active Challenges:**\n"]
             for c in items:
                 tag = " ⭐ default" if default_id and c.challenge_id == default_id else ""
-                lines.append(f"• `{c.challenge_id}` — **{c.challenge_type}**: {c.daily_target} {c.unit}{tag}")
+                lines.append(f"• **{c.challenge_type}**: {c.daily_target} {c.unit}{tag}")
+                lines.append(f"  💡 Log with: `/log amount:{c.daily_target} challenge_id:{c.challenge_type}`")
+                lines.append("")
+
+            lines.append("💡 **Tip:** You can use the challenge type (e.g., 'pushups', 'plank') instead of the ID when logging!")
 
             await interaction.followup.send("\n".join(lines), ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"❌ {e}", ephemeral=True)
 
     @challenge_group.command(name="remove", description="Deactivate a challenge")
-    @app_commands.describe(challenge_id="ID from /challenge list")
+    @app_commands.describe(challenge_id="Challenge ID or type (e.g., 'c_a72893' or 'pushups')")
     async def challenge_remove(interaction: discord.Interaction, challenge_id: str) -> None:
         await interaction.response.defer(ephemeral=True)
         try:
@@ -199,13 +270,23 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
             if not p:
                 await interaction.followup.send("❌ Use **/join** first.", ephemeral=True)
                 return
-            ok = manager.remove_challenge(discord_id=p.discord_id, challenge_id=challenge_id)
+
+            # Resolve challenge reference
+            cid = _resolve_challenge_reference(p.discord_id, challenge_id)
+            if not cid:
+                await interaction.followup.send(
+                    f"❌ No active challenge found for `{challenge_id}`. Use `/challenge list` to see your challenges.",
+                    ephemeral=True
+                )
+                return
+
+            ok = manager.remove_challenge(discord_id=p.discord_id, challenge_id=cid)
             await interaction.followup.send("✅ Removed." if ok else "❌ Could not remove.", ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"❌ {e}", ephemeral=True)
 
     @challenge_group.command(name="setdefault", description="Set your default challenge for /log")
-    @app_commands.describe(challenge_id="ID from /challenge list (leave empty to clear)")
+    @app_commands.describe(challenge_id="Challenge ID or type (e.g., 'pushups')")
     async def challenge_setdefault(interaction: discord.Interaction, challenge_id: str) -> None:
         await interaction.response.defer(ephemeral=True)
         try:
@@ -213,8 +294,24 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
             if not p:
                 await interaction.followup.send("❌ Use **/join** first.", ephemeral=True)
                 return
-            manager.set_default_challenge(discord_id=p.discord_id, challenge_id=challenge_id)
-            await interaction.followup.send(f"✅ Default challenge set to `{challenge_id}`.", ephemeral=True)
+
+            # Resolve challenge reference
+            cid = _resolve_challenge_reference(p.discord_id, challenge_id)
+            if not cid:
+                await interaction.followup.send(
+                    f"❌ No active challenge found for `{challenge_id}`. Use `/challenge list` to see your challenges.",
+                    ephemeral=True
+                )
+                return
+
+            manager.set_default_challenge(discord_id=p.discord_id, challenge_id=cid)
+
+            # Get challenge details for better feedback
+            challenges = manager.list_challenges(p.discord_id, active_only=True)
+            matching = [ch for ch in challenges if ch.challenge_id == cid]
+            challenge_name = matching[0].challenge_type if matching else cid
+
+            await interaction.followup.send(f"✅ Default challenge set to **{challenge_name}**.", ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"❌ {e}", ephemeral=True)
 
