@@ -27,14 +27,20 @@ def _as_date(value: str) -> date:
 def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_config) -> None:
     tree = bot.tree
 
-    # ---------------- /join ----------------
-    @tree.command(name="join", description="Join the daily challenge")
-    @app_commands.describe(gender="male or female", is_disabled="true if you need chair/floor-friendly punishments", timezone="IANA tz like America/Los_Angeles (or PST/EST etc)")
-    async def join_cmd(
+    # ---------------- /join (group) ----------------
+    join_group = app_commands.Group(name="join", description="Join or edit your challenge profile")
+
+    @join_group.command(name="start", description="Join the daily challenge")
+    @app_commands.describe(
+        gender="male or female (required)",
+        is_disabled="true if you need chair/floor-friendly punishments (required)",
+        timezone="IANA tz like America/Los_Angeles or PST/EST (required)"
+    )
+    async def join_start_cmd(
         interaction: discord.Interaction,
         gender: str,
-        is_disabled: bool = False,
-        timezone: str = "America/Los_Angeles",
+        is_disabled: bool,
+        timezone: str,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         try:
@@ -73,6 +79,80 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
                 ephemeral=True,
             )
         except Exception as e:
+            await interaction.followup.send(f"❌ {e}", ephemeral=True)
+
+    @join_group.command(name="edit", description="Edit your profile (gender, is_disabled, timezone)")
+    @app_commands.describe(
+        gender="Update gender (male or female)",
+        is_disabled="Update disability status (true for chair/floor-friendly punishments)",
+        timezone="Update timezone (IANA tz like America/Los_Angeles or PST/EST)"
+    )
+    async def join_edit_cmd(
+        interaction: discord.Interaction,
+        gender: Optional[str] = None,
+        is_disabled: Optional[bool] = None,
+        timezone: Optional[str] = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        try:
+            discord_id = str(interaction.user.id)
+            p = manager.get_participant(discord_id)
+            if not p:
+                await interaction.followup.send(
+                    "❌ You haven't joined yet. Use **/join start** first.",
+                    ephemeral=True
+                )
+                return
+
+            # Check if at least one field is provided
+            if gender is None and is_disabled is None and timezone is None:
+                await interaction.followup.send(
+                    "❌ Please provide at least one field to update (gender, is_disabled, or timezone).",
+                    ephemeral=True
+                )
+                return
+
+            updated_fields = []
+
+            # Update gender
+            if gender is not None:
+                manager.sheets.update_participant_field(discord_id, "gender", gender)
+                updated_fields.append(f"gender: **{gender}**")
+
+                # Update gender role if in a guild
+                if interaction.guild and isinstance(interaction.user, discord.Member):
+                    try:
+                        # Remove old gender roles
+                        for role in interaction.user.roles:
+                            if role.id in [role_ids.ROLE_MALE_GROUP, role_ids.ROLE_FEMALE_GROUP]:
+                                await interaction.user.remove_roles(role, reason="Gender updated")
+
+                        # Add new gender role
+                        gender_role_id = role_ids.get_gender_role_id(gender)
+                        if gender_role_id:
+                            gender_role = interaction.guild.get_role(gender_role_id)
+                            if gender_role and gender_role not in interaction.user.roles:
+                                await interaction.user.add_roles(gender_role, reason=f"Gender updated to: {gender}")
+                    except Exception as e:
+                        LOGGER.warning(f"Failed to update gender roles for {interaction.user}: {e}")
+
+            # Update is_disabled
+            if is_disabled is not None:
+                manager.sheets.update_participant_field(discord_id, "is_disabled", str(is_disabled))
+                updated_fields.append(f"is_disabled: **{is_disabled}**")
+
+            # Update timezone
+            if timezone is not None:
+                tz = normalize_timezone(timezone, default=app_config.challenge.default_timezone)
+                manager.sheets.update_participant_field(discord_id, "timezone", tz)
+                updated_fields.append(f"timezone: **{tz}**")
+
+            await interaction.followup.send(
+                f"✅ **Profile Updated**\n" + "\n".join(f"• {field}" for field in updated_fields),
+                ephemeral=True
+            )
+        except Exception as e:
+            LOGGER.error(f"Error in join edit: {e}")
             await interaction.followup.send(f"❌ {e}", ephemeral=True)
 
     # ---------------- /log ----------------
@@ -132,7 +212,7 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
         try:
             p = manager.get_participant(str(interaction.user.id))
             if not p:
-                await interaction.followup.send("❌ You're not in the challenge yet. Use **/join** first.", ephemeral=True)
+                await interaction.followup.send("❌ You're not in the challenge yet. Use **/join start** first.", ephemeral=True)
                 return
 
             tz_name = normalize_timezone(p.timezone, default=app_config.challenge.default_timezone)
@@ -217,7 +297,7 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
         try:
             p = manager.get_participant(str(interaction.user.id))
             if not p:
-                await interaction.followup.send("❌ Use **/join** first.", ephemeral=True)
+                await interaction.followup.send("❌ Use **/join start** first.", ephemeral=True)
                 return
             ch = manager.add_challenge(
                 discord_id=p.discord_id,
@@ -240,7 +320,7 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
         try:
             p = manager.get_participant(str(interaction.user.id))
             if not p:
-                await interaction.followup.send("❌ Use **/join** first.", ephemeral=True)
+                await interaction.followup.send("❌ Use **/join start** first.", ephemeral=True)
                 return
             items = manager.list_challenges(p.discord_id, active_only=True)
             if not items:
@@ -268,7 +348,7 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
         try:
             p = manager.get_participant(str(interaction.user.id))
             if not p:
-                await interaction.followup.send("❌ Use **/join** first.", ephemeral=True)
+                await interaction.followup.send("❌ Use **/join start** first.", ephemeral=True)
                 return
 
             # Resolve challenge reference
@@ -292,7 +372,7 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
         try:
             p = manager.get_participant(str(interaction.user.id))
             if not p:
-                await interaction.followup.send("❌ Use **/join** first.", ephemeral=True)
+                await interaction.followup.send("❌ Use **/join start** first.", ephemeral=True)
                 return
 
             # Resolve challenge reference
@@ -554,7 +634,7 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
         try:
             p = manager.get_participant(str(interaction.user.id))
             if not p:
-                await interaction.followup.send("❌ Use **/join** first.", ephemeral=True)
+                await interaction.followup.send("❌ Use **/join start** first.", ephemeral=True)
                 return
 
             tz_name = normalize_timezone(p.timezone, default=app_config.challenge.default_timezone)
@@ -632,7 +712,7 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
         try:
             p = manager.get_participant(str(interaction.user.id))
             if not p:
-                await interaction.followup.send("❌ Use **/join** first.", ephemeral=True)
+                await interaction.followup.send("❌ Use **/join start** first.", ephemeral=True)
                 return
             d = _as_date(target_day)
             deadline = datetime.utcnow().replace(tzinfo=pytz.UTC) + timedelta(hours=12)
@@ -658,7 +738,7 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
         try:
             p = manager.get_participant(str(interaction.user.id))
             if not p:
-                await interaction.followup.send("❌ Use **/join** first.", ephemeral=True)
+                await interaction.followup.send("❌ Use **/join start** first.", ephemeral=True)
                 return
             manager.register_vote(request_id=request_id, voter_id=p.discord_id, vote=vote)
             await interaction.followup.send("✅ Vote recorded.", ephemeral=True)
@@ -847,6 +927,7 @@ Provide a detailed, personalized response in 2-3 paragraphs. Consider their prof
             LOGGER.error(traceback.format_exc())
             await interaction.followup.send(f"❌ An error occurred: {e}", ephemeral=True)
 
+    tree.add_command(join_group)
     tree.add_command(challenge_group)
     tree.add_command(admin_group)
     tree.add_command(dayoff_group)
