@@ -818,6 +818,8 @@ Make it feel fresh, authentic, and pumped up. No generic quotes."""
                     unit = challenge.unit
                 else:
                     # Fallback for old data without challenge_id
+                    if challenge_id:
+                        LOGGER.warning(f"⚠️ Challenge ID '{challenge_id}' not found in lookup for log on {log_date}. Defaulting to pushups. Check for typos in DailyLog sheet!")
                     challenge_type = 'pushups'
                     unit = 'reps'
 
