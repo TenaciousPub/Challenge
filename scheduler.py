@@ -863,8 +863,17 @@ Make it feel fresh, authentic, and pumped up. No generic quotes."""
             # Get all logs for today
             all_logs = self._fetch_logs_for_leaderboard(target_date=today, is_global=False)
 
-            # Build leaderboard by challenge type
+            # Get ALL challenge types from Challenges sheet (not just ones with data)
             challenge_types = set()
+            try:
+                all_challenges = self.manager.sheets.fetch_challenges(active_only=True)
+                for ch in all_challenges:
+                    challenge_types.add(ch.challenge_type)
+                LOGGER.info(f"Found {len(challenge_types)} challenge types: {challenge_types}")
+            except Exception as e:
+                LOGGER.warning(f"Failed to fetch challenge types: {e}")
+
+            # Also add any challenge types from logged data
             for discord_id, challenges in all_logs.items():
                 challenge_types.update(challenges.keys())
 
@@ -872,6 +881,8 @@ Make it feel fresh, authentic, and pumped up. No generic quotes."""
 
             if not challenge_types:
                 challenge_types = ['pushups']  # Default fallback
+
+            LOGGER.info(f"Leaderboard will show {len(challenge_types)} pages: {challenge_types}")
 
             # Create interactive view with pagination
             view = self.LeaderboardView(self, today, challenge_types)
