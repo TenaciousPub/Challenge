@@ -722,14 +722,19 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
             display_name = interaction.user.display_name
 
             # Get or create nutrition profile from sheets
+            user_profile = None
             try:
-                profile = manager.sheets.get_all_records("NutritionProfiles")
-                user_profile = None
-                for p in profile:
+                ws = manager.sheets._worksheet("NutritionProfiles")
+                from .sheets import _safe_get_all_records
+                profiles = _safe_get_all_records(ws, expected_headers=["discord_id", "display_name", "height_cm", "weight_kg", "goal", "last_updated"])
+
+                for p in profiles:
                     if str(p.get('discord_id', '')) == discord_id:
                         user_profile = p
+                        LOGGER.info(f"Found nutrition profile for {display_name}: {user_profile}")
                         break
-            except:
+            except Exception as e:
+                LOGGER.warning(f"Failed to fetch nutrition profile: {e}")
                 user_profile = None
 
             # Update profile if new data provided
