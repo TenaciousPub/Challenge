@@ -193,6 +193,13 @@ class GoogleSheetsService:
         participants: List[Participant] = []
         for r in rows:
             try:
+                discord_id = str(r.get("discord_id", "")).strip()
+
+                # Skip invalid discord IDs (empty, header row, or non-numeric)
+                if not discord_id or discord_id == "discord_id" or not discord_id.isdigit():
+                    LOGGER.debug(f"Skipping invalid participant row with discord_id='{discord_id}'")
+                    continue
+
                 joined_on_raw = str(r.get("joined_on") or "").strip()
                 joined_on_val: Optional[date] = None
                 if joined_on_raw:
@@ -203,7 +210,7 @@ class GoogleSheetsService:
 
                 participants.append(
                     Participant(
-                        discord_id=str(r.get("discord_id", "")).strip(),
+                        discord_id=discord_id,
                         discord_tag=str(r.get("discord_tag", "")).strip(),
                         display_name=str(r.get("display_name", "")).strip(),
                         gender=(str(r.get("gender", "")).strip().lower() or None),
