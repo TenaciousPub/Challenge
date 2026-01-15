@@ -407,6 +407,98 @@ class ComplianceScheduler:
             pass
         self._congrats_flags.add(flag)
 
+    def _count_recent_compliance_breaks(self, discord_id: str, days: int = 30) -> int:
+        """Count how many days in the last N days the participant was non-compliant."""
+        try:
+            today = datetime.now().date()
+            breaks = 0
+
+            for i in range(days):
+                check_date = today - timedelta(days=i+1)
+
+                # Skip if before challenge start date
+                start_str = getattr(self.app_config.challenge, "start_date", None)
+                if start_str:
+                    try:
+                        start_day = date.fromisoformat(start_str)
+                        if check_date < start_day:
+                            continue
+                    except Exception:
+                        pass
+
+                # Check if they had an approved day off
+                try:
+                    if self.manager.has_approved_dayoff(participant_id=discord_id, local_day=check_date):
+                        continue
+                except Exception:
+                    pass
+
+                # Evaluate compliance for that day
+                try:
+                    status = self.manager.evaluate_multi_compliance(check_date).get(str(discord_id))
+                    if status and not bool(status.get("compliant")):
+                        breaks += 1
+                except Exception as e:
+                    LOGGER.debug(f"Failed to check compliance for {discord_id} on {check_date}: {e}")
+                    continue
+
+            return breaks
+        except Exception as e:
+            LOGGER.warning(f"Failed to count compliance breaks for {discord_id}: {e}")
+            return 0
+
+    async def _generate_ai_punishment(self, compliance_breaks: int, is_disabled: bool, display_name: str) -> Optional[str]:
+        """Generate an AI punishment based on compliance history and accessibility needs."""
+        # Determine difficulty/severity based on compliance breaks
+        if compliance_breaks == 0:
+            severity = "easy"
+            severity_desc = "This is their first miss - keep it light and encouraging"
+        elif compliance_breaks <= 2:
+            severity = "light"
+            severity_desc = "They've missed a few times - moderate difficulty"
+        elif compliance_breaks <= 5:
+            severity = "moderate"
+            severity_desc = "Multiple misses - increase the challenge"
+        elif compliance_breaks <= 10:
+            severity = "hard"
+            severity_desc = "Many misses - make them work for it"
+        else:
+            severity = "brutal"
+            severity_desc = "Consistent non-compliance - maximum intensity"
+
+        # Build the AI prompt
+        accessibility = "IMPORTANT: This person needs chair/floor-friendly exercises only (no jumping, no high-impact). Use seated exercises, wall pushups, floor work, or gentle movements." if is_disabled else "Use any exercise type - burpees, jumping, running, pushups, squats, etc."
+
+        prompt = f"""You are a creative fitness coach assigning a punishment workout for someone who missed their daily challenge goal.
+
+Compliance History: {compliance_breaks} missed days in the last 30 days
+Severity Level: {severity} ({severity_desc})
+Accessibility: {accessibility}
+
+Generate ONE specific punishment workout that:
+1. Matches the severity level ({severity})
+2. Respects accessibility needs
+3. Is challenging but achievable (5-20 minutes max)
+4. Has specific numbers (sets/reps/time)
+5. Is formatted clearly (e.g., "50 burpees" or "3×15 wall pushups" or "5 minute plank hold")
+
+Respond with ONLY the punishment workout description (no explanation, no greeting, just the workout). Maximum 100 characters."""
+
+        try:
+            response, provider = await self._call_ai_with_rate_limit(prompt)
+            if response:
+                # Clean up the response
+                punishment = response.strip()
+                if len(punishment) > 150:
+                    punishment = punishment[:150].rsplit(' ', 1)[0]  # Cut at last word
+
+                LOGGER.info(f"AI-generated {severity} punishment for {display_name} ({compliance_breaks} breaks): {punishment} [Provider: {provider}]")
+                return punishment
+        except Exception as e:
+            LOGGER.warning(f"Failed to generate AI punishment: {e}")
+
+        return None
+
     async def _maybe_run_local_midnight_punishment(self, discord_id: str, display_name: str, tz: pytz.BaseTzInfo) -> None:
         """At local midnight window, check YESTERDAY compliance in user's TZ and assign punishment if needed."""
         now_local = datetime.now(tz)
@@ -471,33 +563,40 @@ class ComplianceScheduler:
             summary_lines.append(f"• {m.get('type')} — need {m.get('need')} {m.get('unit')}")
         summary = "\n".join(summary_lines) if summary_lines else "• You missed your goal."
 
-        # Choose punishment: disabled -> floor/chair only; else any
+        # Count recent compliance breaks (last 30 days)
+        compliance_breaks = self._count_recent_compliance_breaks(discord_id, days=30)
+        LOGGER.info(f"{display_name} has {compliance_breaks} compliance breaks in the last 30 days")
+
+        # Get participant info for accessibility needs
         p = self.manager.get_participant_by_id(discord_id)
-        punishment = None
-        try:
-            if p and p.is_disabled and hasattr(self.manager.workouts, "random_floor_or_chair"):
-                punishment = self.manager.workouts.random_floor_or_chair()
-            elif hasattr(self.manager.workouts, "random"):
-                punishment = self.manager.workouts.random()
-        except Exception:
-            punishment = None
 
-        accessible_fallback = [
-            "🪑 Chair tricep dips — 3×10",
-            "🪑 Seated leg raises — 3×15",
-            "🪑 Wall pushups — 3×15",
-            "🪑 Seated torso twists — 3×20",
-            "🪑 Gentle chair yoga flow — 5 minutes",
-            "🪑 Floor glute bridges — 3×15",
-            "🪑 Seated punches — 3×30s",
-            "🪑 Floor stretches + 2×15 wall pushups",
-        ]
+        # Generate AI punishment based on compliance history and accessibility
+        punishment_text = await self._generate_ai_punishment(
+            compliance_breaks=compliance_breaks,
+            is_disabled=p.is_disabled if p else False,
+            display_name=display_name
+        )
 
-        punishment_text = None
-        if punishment and getattr(punishment, "description", None):
-            punishment_text = str(punishment.description).strip()
         if not punishment_text:
-            punishment_text = random.choice(accessible_fallback) if (p and p.is_disabled) else "100 burpees — unbroken if possible 😈"
+            # Fallback punishments if AI fails
+            accessible_fallback = [
+                "🪑 Chair tricep dips — 3×10",
+                "🪑 Seated leg raises — 3×15",
+                "🪑 Wall pushups — 3×15",
+                "🪑 Seated torso twists — 3×20",
+                "🪑 Gentle chair yoga flow — 5 minutes",
+                "🪑 Floor glute bridges — 3×15",
+                "🪑 Seated punches — 3×30s",
+                "🪑 Floor stretches + 2×15 wall pushups",
+            ]
+            standard_fallback = [
+                "50 burpees",
+                "100 pushups",
+                "200 air squats",
+                "5 minute plank hold",
+                "100 jump squats",
+            ]
+            punishment_text = random.choice(accessible_fallback) if (p and p.is_disabled) else random.choice(standard_fallback)
 
         # DM punishment
         try:
