@@ -444,6 +444,16 @@ class ComplianceScheduler:
         except Exception:
             pass
 
+        # Skip if participant has no active challenges
+        try:
+            active_challenges = self.manager.list_challenges(discord_id, active_only=True)
+            if not active_challenges:
+                LOGGER.info(f"Skipping punishment for {display_name} - no active challenges set")
+                self._punish_flags.add(flag)
+                return
+        except Exception as e:
+            LOGGER.warning(f"Failed to check active challenges for {discord_id}: {e}")
+
         # Check multi compliance for yesterday
         try:
             status = self.manager.evaluate_multi_compliance(yday).get(str(discord_id))
