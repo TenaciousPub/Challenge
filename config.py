@@ -11,6 +11,12 @@ class BotConfig:
     token: str
     guild_id: Optional[int] = None
 
+    # Channel IDs for auto-posting
+    daily_checkins_channel_id: Optional[int] = None
+    leaderboards_channel_id: Optional[int] = None
+    motivation_channel_id: Optional[int] = None
+    punishment_channel_id: Optional[int] = None
+
 
 @dataclass(slots=True)
 class SheetsConfig:
@@ -42,6 +48,10 @@ class ChallengeConfig:
     reminder_time_local: str = "22:00"
     congrats_time_local: str = "20:00"     # (scheduler checks every minute anyway)
 
+    # Channel posting times (server timezone - default_timezone)
+    daily_checkin_time: str = "06:00"      # Morning check-in
+    leaderboard_time: str = "20:00"        # Evening leaderboard update
+
     # Punishment at local midnight for yesterday
     punishment_run_time_local: str = "00:05"
 
@@ -70,7 +80,11 @@ def load_config() -> AppConfig:
     if not spreadsheet_id:
         raise RuntimeError("Missing SHEET_ID (or SPREADSHEET_ID)")
 
-    creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip() or os.getenv("CREDENTIALS_PATH", "").strip()
+    creds_path = (
+        os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+        or os.getenv("CREDENTIALS_PATH", "").strip()
+        or "/tmp/google-sa.json"  # Default for Docker deployment
+    )
     if not creds_path:
         raise RuntimeError("Missing GOOGLE_APPLICATION_CREDENTIALS (service account json path)")
 
@@ -110,11 +124,20 @@ def load_config() -> AppConfig:
         reminder_time_local=os.getenv("REMINDER_TIME_LOCAL", "22:00").strip(),
         congrats_time_local=os.getenv("CONGRATS_TIME_LOCAL", "20:00").strip(),
         punishment_run_time_local=os.getenv("PUNISHMENT_TIME_LOCAL", "00:05").strip(),
+        daily_checkin_time=os.getenv("DAILY_CHECKIN_TIME", "06:00").strip(),
+        leaderboard_time=os.getenv("LEADERBOARD_TIME", "20:00").strip(),
         start_date=os.getenv("CHALLENGE_START_DATE", "").strip() or None,
     )
 
     return AppConfig(
-        bot=BotConfig(token=token, guild_id=guild_id),
+        bot=BotConfig(
+            token=token,
+            guild_id=guild_id,
+            daily_checkins_channel_id=_opt_int("DAILY_CHECKINS_CHANNEL_ID"),
+            leaderboards_channel_id=_opt_int("LEADERBOARDS_CHANNEL_ID"),
+            motivation_channel_id=_opt_int("MOTIVATION_CHANNEL_ID"),
+            punishment_channel_id=_opt_int("PUNISHMENT_CHANNEL_ID"),
+        ),
         sheets=SheetsConfig(spreadsheet_id=spreadsheet_id, credentials_path=Path(creds_path)),
         challenge=challenge,
     )
