@@ -544,7 +544,9 @@ Respond with ONLY the punishment workout description (no explanation, no greetin
                 self._punish_flags.add(flag)
                 return
         except Exception as e:
-            LOGGER.warning(f"Failed to check active challenges for {discord_id}: {e}")
+            LOGGER.error(f"Failed to check active challenges for {discord_id}: {e}. Skipping punishment to be safe.")
+            self._punish_flags.add(flag)
+            return
 
         # Check multi compliance for yesterday
         try:
