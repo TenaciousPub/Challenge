@@ -449,40 +449,55 @@ class ComplianceScheduler:
 
     async def _generate_ai_punishment(self, compliance_breaks: int, is_disabled: bool, display_name: str) -> Optional[str]:
         """Generate an AI punishment based on compliance history and accessibility needs."""
-        # Determine difficulty/severity based on compliance breaks
+        # Determine difficulty/severity based on compliance breaks (more aggressive scaling)
         if compliance_breaks == 0:
             severity = "easy"
-            severity_desc = "This is their first miss - keep it light and encouraging"
-        elif compliance_breaks <= 2:
+            severity_desc = "First miss - encouraging warmup"
+            example = "30 pushups or 2-min plank"
+        elif compliance_breaks == 1:
             severity = "light"
-            severity_desc = "They've missed a few times - moderate difficulty"
-        elif compliance_breaks <= 5:
+            severity_desc = "Second miss - light workout"
+            example = "50 burpees or 75 squats"
+        elif compliance_breaks == 2:
             severity = "moderate"
-            severity_desc = "Multiple misses - increase the challenge"
-        elif compliance_breaks <= 10:
+            severity_desc = "Third miss - moderate intensity"
+            example = "100 burpees or 150 pushups"
+        elif compliance_breaks == 3:
+            severity = "challenging"
+            severity_desc = "Fourth miss - challenging workout"
+            example = "150 burpees or 200 squats"
+        elif compliance_breaks == 4:
             severity = "hard"
-            severity_desc = "Many misses - make them work for it"
-        else:
+            severity_desc = "Fifth miss - hard punishment"
+            example = "200 burpees or 300 squats"
+        elif compliance_breaks <= 6:
             severity = "brutal"
-            severity_desc = "Consistent non-compliance - maximum intensity"
+            severity_desc = "Multiple misses - brutal intensity"
+            example = "300 burpees or 500 squats"
+        else:
+            severity = "extreme"
+            severity_desc = "Consistent failure - maximum punishment"
+            example = "400+ burpees or 20-min continuous work"
 
         # Build the AI prompt
         accessibility = "IMPORTANT: This person needs chair/floor-friendly exercises only (no jumping, no high-impact). Use seated exercises, wall pushups, floor work, or gentle movements." if is_disabled else "Use any exercise type - burpees, jumping, running, pushups, squats, etc."
 
-        prompt = f"""You are a creative fitness coach assigning a punishment workout for someone who missed their daily challenge goal.
+        prompt = f"""You are a strict fitness coach assigning a punishment workout for someone who missed their daily challenge goal.
 
 Compliance History: {compliance_breaks} missed days in the last 30 days
-Severity Level: {severity} ({severity_desc})
+Severity Level: {severity} - {severity_desc}
+Example for this level: {example}
 Accessibility: {accessibility}
 
 Generate ONE specific punishment workout that:
-1. Matches the severity level ({severity})
-2. Respects accessibility needs
-3. Is challenging but achievable (5-20 minutes max)
-4. Has specific numbers (sets/reps/time)
-5. Is formatted clearly (e.g., "50 burpees" or "3×15 wall pushups" or "5 minute plank hold")
+1. MUST match or EXCEED the severity level ({severity})
+2. Use the example as a MINIMUM baseline - make it harder if appropriate
+3. Each miss should result in noticeably harder punishment than the last
+4. Respects accessibility needs
+5. Has specific numbers (sets/reps/time)
+6. Is formatted clearly (e.g., "150 burpees" or "4×25 wall pushups" or "8-min plank")
 
-Respond with ONLY the punishment workout description (no explanation, no greeting, just the workout). Maximum 100 characters."""
+Respond with ONLY the punishment workout description. Maximum 120 characters."""
 
         try:
             response, provider = await self._call_ai_with_rate_limit(prompt)
@@ -604,16 +619,25 @@ Respond with ONLY the punishment workout description (no explanation, no greetin
         try:
             user = self.bot.get_user(int(discord_id))
             if user:
+                # Build missed days counter message
+                if compliance_breaks == 0:
+                    streak_msg = "🆕 This is your first miss."
+                elif compliance_breaks == 1:
+                    streak_msg = "⚠️ You've missed **2 days** in the last 30 days."
+                else:
+                    streak_msg = f"🔥 You've missed **{compliance_breaks + 1} days** in the last 30 days. Time to turn it around!"
+
                 await user.send(
                     "😈 You missed your goal yesterday.\n\n"
                     f"{summary}\n\n"
+                    f"{streak_msg}\n\n"
                     f"Here's your punishment workout:\n**{punishment_text}**"
                 )
         except Exception as e:
             LOGGER.warning("Failed to DM punishment to %s: %s", display_name, e)
 
         # Post punishment to channel
-        await self._post_punishment_announcement(discord_id, display_name, punishment_text)
+        await self._post_punishment_announcement(discord_id, display_name, punishment_text, compliance_breaks)
 
         # Mark punished (sheet + daily log)
         try:
@@ -1057,7 +1081,7 @@ Make it feel fresh, authentic, and pumped up. No generic quotes."""
             LOGGER.warning("Failed to post motivation message: %s", e)
             self._channel_post_flags.add(flag)
 
-    async def _post_punishment_announcement(self, discord_id: str, display_name: str, punishment_text: str) -> None:
+    async def _post_punishment_announcement(self, discord_id: str, display_name: str, punishment_text: str, compliance_breaks: int) -> None:
         """Post punishment announcement to #punishment-wo... channel"""
         channel_id = self.app_config.bot.punishment_channel_id
         if not channel_id:
@@ -1072,14 +1096,25 @@ Make it feel fresh, authentic, and pumped up. No generic quotes."""
             guild = self.bot.get_guild(self.app_config.bot.guild_id) if self.app_config.bot.guild_id else None
             mention = f"<@{discord_id}>"
 
+            # Build streak message
+            if compliance_breaks == 0:
+                streak_indicator = "🆕 First miss"
+            elif compliance_breaks == 1:
+                streak_indicator = "⚠️ 2 misses in last 30 days"
+            elif compliance_breaks <= 3:
+                streak_indicator = f"🔥 {compliance_breaks + 1} misses in last 30 days"
+            else:
+                streak_indicator = f"💀 {compliance_breaks + 1} misses in last 30 days - Getting serious!"
+
             message = (
                 f"😈 **Punishment Assigned**\n\n"
-                f"{mention} missed their goal yesterday.\n\n"
+                f"{mention} missed their goal yesterday.\n"
+                f"{streak_indicator}\n\n"
                 f"**Punishment Workout:**\n{punishment_text}\n\n"
                 f"💪 Time to make up for it!"
             )
 
             await channel.send(message)
-            LOGGER.info("Posted punishment announcement for %s to channel %s", display_name, channel_id)
+            LOGGER.info("Posted punishment announcement for %s to channel %s (breaks: %d)", display_name, channel_id, compliance_breaks)
         except Exception as e:
             LOGGER.warning("Failed to post punishment announcement: %s", e)
