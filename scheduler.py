@@ -453,49 +453,70 @@ class ComplianceScheduler:
         if compliance_breaks == 0:
             severity = "easy"
             severity_desc = "First miss - encouraging warmup"
-            example = "30 pushups or 2-min plank"
+            example_standard = "30 pushups or 2-min plank"
+            example_accessible = "3×10 wall pushups or 2×15 seated leg raises"
         elif compliance_breaks == 1:
             severity = "light"
             severity_desc = "Second miss - light workout"
-            example = "50 burpees or 75 squats"
+            example_standard = "50 burpees or 75 squats"
+            example_accessible = "3×15 wall pushups + 2×20 seated marches"
         elif compliance_breaks == 2:
             severity = "moderate"
             severity_desc = "Third miss - moderate intensity"
-            example = "100 burpees or 150 pushups"
+            example_standard = "100 burpees or 150 pushups"
+            example_accessible = "4×20 wall pushups + 3×15 chair dips"
         elif compliance_breaks == 3:
             severity = "challenging"
             severity_desc = "Fourth miss - challenging workout"
-            example = "150 burpees or 200 squats"
+            example_standard = "150 burpees or 200 squats"
+            example_accessible = "5×20 wall pushups + 4×15 floor glute bridges"
         elif compliance_breaks == 4:
             severity = "hard"
             severity_desc = "Fifth miss - hard punishment"
-            example = "200 burpees or 300 squats"
+            example_standard = "200 burpees or 300 squats"
+            example_accessible = "6×20 wall pushups + 5×20 seated twists + 3-min plank"
         elif compliance_breaks <= 6:
             severity = "brutal"
             severity_desc = "Multiple misses - brutal intensity"
-            example = "300 burpees or 500 squats"
+            example_standard = "300 burpees or 500 squats"
+            example_accessible = "8×25 wall pushups + 6×20 chair dips + 5-min plank"
         else:
             severity = "extreme"
             severity_desc = "Consistent failure - maximum punishment"
-            example = "400+ burpees or 20-min continuous work"
+            example_standard = "400+ burpees or 20-min continuous work"
+            example_accessible = "10×30 wall pushups + 8×25 floor work + 8-min plank"
 
-        # Build the AI prompt
-        accessibility = "IMPORTANT: This person needs chair/floor-friendly exercises only (no jumping, no high-impact). Use seated exercises, wall pushups, floor work, or gentle movements." if is_disabled else "Use any exercise type - burpees, jumping, running, pushups, squats, etc."
+        # Build the AI prompt with explicit disability checking
+        if is_disabled:
+            accessibility_status = "DISABLED/ACCESSIBILITY NEEDS"
+            accessibility_rules = """CRITICAL ACCESSIBILITY REQUIREMENTS - YOU MUST FOLLOW THESE:
+- NO jumping exercises (no burpees, no jump squats, no jumping jacks)
+- NO high-impact movements
+- ONLY use: wall pushups, chair exercises, seated movements, floor work, planks
+- Focus on: chair dips, seated leg raises, seated marches, wall pushups, floor glute bridges, planks, seated twists"""
+            example = example_accessible
+        else:
+            accessibility_status = "STANDARD (no restrictions)"
+            accessibility_rules = "Use any exercise type - burpees, jumping, running, pushups, squats, lunges, etc. Make it challenging!"
+            example = example_standard
 
         prompt = f"""You are a strict fitness coach assigning a punishment workout for someone who missed their daily challenge goal.
 
+PARTICIPANT STATUS: {accessibility_status}
 Compliance History: {compliance_breaks} missed days in the last 30 days
 Severity Level: {severity} - {severity_desc}
-Example for this level: {example}
-Accessibility: {accessibility}
+
+{accessibility_rules}
+
+Baseline Example for this level: {example}
 
 Generate ONE specific punishment workout that:
 1. MUST match or EXCEED the severity level ({severity})
-2. Use the example as a MINIMUM baseline - make it harder if appropriate
-3. Each miss should result in noticeably harder punishment than the last
-4. Respects accessibility needs
+2. Use the baseline example as a MINIMUM - make it harder if appropriate
+3. Each miss should be noticeably harder than the last
+4. STRICTLY respects the accessibility requirements above
 5. Has specific numbers (sets/reps/time)
-6. Is formatted clearly (e.g., "150 burpees" or "4×25 wall pushups" or "8-min plank")
+6. Is formatted clearly (e.g., "4×25 wall pushups + 3×15 chair dips")
 
 Respond with ONLY the punishment workout description. Maximum 120 characters."""
 
@@ -507,7 +528,7 @@ Respond with ONLY the punishment workout description. Maximum 120 characters."""
                 if len(punishment) > 150:
                     punishment = punishment[:150].rsplit(' ', 1)[0]  # Cut at last word
 
-                LOGGER.info(f"AI-generated {severity} punishment for {display_name} ({compliance_breaks} breaks): {punishment} [Provider: {provider}]")
+                LOGGER.info(f"AI-generated {severity} punishment for {display_name} ({compliance_breaks} breaks, disabled={is_disabled}): {punishment} [Provider: {provider}]")
                 return punishment
         except Exception as e:
             LOGGER.warning(f"Failed to generate AI punishment: {e}")
@@ -595,25 +616,39 @@ Respond with ONLY the punishment workout description. Maximum 120 characters."""
         )
 
         if not punishment_text:
-            # Fallback punishments if AI fails
-            accessible_fallback = [
-                "🪑 Chair tricep dips — 3×10",
-                "🪑 Seated leg raises — 3×15",
-                "🪑 Wall pushups — 3×15",
-                "🪑 Seated torso twists — 3×20",
-                "🪑 Gentle chair yoga flow — 5 minutes",
-                "🪑 Floor glute bridges — 3×15",
-                "🪑 Seated punches — 3×30s",
-                "🪑 Floor stretches + 2×15 wall pushups",
-            ]
-            standard_fallback = [
-                "50 burpees",
-                "100 pushups",
-                "200 air squats",
-                "5 minute plank hold",
-                "100 jump squats",
-            ]
-            punishment_text = random.choice(accessible_fallback) if (p and p.is_disabled) else random.choice(standard_fallback)
+            # Fallback punishments if AI fails - scale with severity
+            if p and p.is_disabled:
+                # Accessible fallbacks that scale with compliance breaks
+                if compliance_breaks == 0:
+                    punishment_text = "3×10 wall pushups + 2×15 seated leg raises"
+                elif compliance_breaks == 1:
+                    punishment_text = "3×15 wall pushups + 2×20 seated marches"
+                elif compliance_breaks == 2:
+                    punishment_text = "4×20 wall pushups + 3×15 chair dips"
+                elif compliance_breaks == 3:
+                    punishment_text = "5×20 wall pushups + 4×15 floor glute bridges"
+                elif compliance_breaks == 4:
+                    punishment_text = "6×20 wall pushups + 5×20 seated twists + 3-min plank"
+                elif compliance_breaks <= 6:
+                    punishment_text = "8×25 wall pushups + 6×20 chair dips + 5-min plank"
+                else:
+                    punishment_text = "10×30 wall pushups + 8×25 floor glute bridges + 8-min plank"
+            else:
+                # Standard fallbacks that scale with compliance breaks
+                if compliance_breaks == 0:
+                    punishment_text = "30 pushups"
+                elif compliance_breaks == 1:
+                    punishment_text = "50 burpees"
+                elif compliance_breaks == 2:
+                    punishment_text = "100 burpees"
+                elif compliance_breaks == 3:
+                    punishment_text = "150 burpees"
+                elif compliance_breaks == 4:
+                    punishment_text = "200 burpees"
+                elif compliance_breaks <= 6:
+                    punishment_text = "300 burpees"
+                else:
+                    punishment_text = "400 burpees — unbroken if possible"
 
         # DM punishment
         try:
