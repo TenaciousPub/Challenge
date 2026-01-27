@@ -407,14 +407,16 @@ class ComplianceScheduler:
             pass
         self._congrats_flags.add(flag)
 
-    def _count_recent_compliance_breaks(self, discord_id: str, days: int = 30) -> int:
-        """Count how many days in the last N days the participant was non-compliant."""
+    def _count_recent_compliance_breaks(self, discord_id: str, reference_date: date, days: int = 30) -> int:
+        """
+        Count how many days in the last N days the participant was non-compliant.
+        Includes the reference_date in the count (typically yesterday when punishing).
+        """
         try:
-            today = datetime.now().date()
             breaks = 0
 
             for i in range(days):
-                check_date = today - timedelta(days=i+1)
+                check_date = reference_date - timedelta(days=i)
 
                 # Skip if before challenge start date
                 start_str = getattr(self.app_config.challenge, "start_date", None)
@@ -438,6 +440,7 @@ class ComplianceScheduler:
                     status = self.manager.evaluate_multi_compliance(check_date).get(str(discord_id))
                     if status and not bool(status.get("compliant")):
                         breaks += 1
+                        LOGGER.debug(f"Found non-compliant day for {discord_id} on {check_date}")
                 except Exception as e:
                     LOGGER.debug(f"Failed to check compliance for {discord_id} on {check_date}: {e}")
                     continue
@@ -449,33 +452,33 @@ class ComplianceScheduler:
 
     async def _generate_ai_punishment(self, compliance_breaks: int, is_disabled: bool, display_name: str) -> Optional[str]:
         """Generate an AI punishment based on compliance history and accessibility needs."""
-        # Determine difficulty/severity based on compliance breaks (more aggressive scaling)
-        if compliance_breaks == 0:
+        # Determine difficulty/severity based on total compliance breaks (including current miss)
+        if compliance_breaks <= 1:
             severity = "easy"
             severity_desc = "First miss - encouraging warmup"
             example_standard = "30 pushups or 2-min plank"
             example_accessible = "3×10 wall pushups or 2×15 seated leg raises"
-        elif compliance_breaks == 1:
+        elif compliance_breaks == 2:
             severity = "light"
             severity_desc = "Second miss - light workout"
             example_standard = "50 burpees or 75 squats"
             example_accessible = "3×15 wall pushups + 2×20 seated marches"
-        elif compliance_breaks == 2:
+        elif compliance_breaks == 3:
             severity = "moderate"
             severity_desc = "Third miss - moderate intensity"
             example_standard = "100 burpees or 150 pushups"
             example_accessible = "4×20 wall pushups + 3×15 chair dips"
-        elif compliance_breaks == 3:
+        elif compliance_breaks == 4:
             severity = "challenging"
             severity_desc = "Fourth miss - challenging workout"
             example_standard = "150 burpees or 200 squats"
             example_accessible = "5×20 wall pushups + 4×15 floor glute bridges"
-        elif compliance_breaks == 4:
+        elif compliance_breaks == 5:
             severity = "hard"
             severity_desc = "Fifth miss - hard punishment"
             example_standard = "200 burpees or 300 squats"
             example_accessible = "6×20 wall pushups + 5×20 seated twists + 3-min plank"
-        elif compliance_breaks <= 6:
+        elif compliance_breaks <= 7:
             severity = "brutal"
             severity_desc = "Multiple misses - brutal intensity"
             example_standard = "300 burpees or 500 squats"
@@ -601,9 +604,9 @@ Respond with ONLY the punishment workout description. Maximum 120 characters."""
             summary_lines.append(f"• {m.get('type')} — need {m.get('need')} {m.get('unit')}")
         summary = "\n".join(summary_lines) if summary_lines else "• You missed your goal."
 
-        # Count recent compliance breaks (last 30 days)
-        compliance_breaks = self._count_recent_compliance_breaks(discord_id, days=30)
-        LOGGER.info(f"{display_name} has {compliance_breaks} compliance breaks in the last 30 days")
+        # Count recent compliance breaks (last 30 days, including yesterday)
+        compliance_breaks = self._count_recent_compliance_breaks(discord_id, reference_date=yday, days=30)
+        LOGGER.info(f"{display_name} has {compliance_breaks} compliance breaks in the last 30 days (including {yday.isoformat()})")
 
         # Get participant info for accessibility needs
         p = self.manager.get_participant_by_id(discord_id)
@@ -619,33 +622,33 @@ Respond with ONLY the punishment workout description. Maximum 120 characters."""
             # Fallback punishments if AI fails - scale with severity
             if p and p.is_disabled:
                 # Accessible fallbacks that scale with compliance breaks
-                if compliance_breaks == 0:
+                if compliance_breaks <= 1:
                     punishment_text = "3×10 wall pushups + 2×15 seated leg raises"
-                elif compliance_breaks == 1:
-                    punishment_text = "3×15 wall pushups + 2×20 seated marches"
                 elif compliance_breaks == 2:
-                    punishment_text = "4×20 wall pushups + 3×15 chair dips"
+                    punishment_text = "3×15 wall pushups + 2×20 seated marches"
                 elif compliance_breaks == 3:
-                    punishment_text = "5×20 wall pushups + 4×15 floor glute bridges"
+                    punishment_text = "4×20 wall pushups + 3×15 chair dips"
                 elif compliance_breaks == 4:
+                    punishment_text = "5×20 wall pushups + 4×15 floor glute bridges"
+                elif compliance_breaks == 5:
                     punishment_text = "6×20 wall pushups + 5×20 seated twists + 3-min plank"
-                elif compliance_breaks <= 6:
+                elif compliance_breaks <= 7:
                     punishment_text = "8×25 wall pushups + 6×20 chair dips + 5-min plank"
                 else:
                     punishment_text = "10×30 wall pushups + 8×25 floor glute bridges + 8-min plank"
             else:
                 # Standard fallbacks that scale with compliance breaks
-                if compliance_breaks == 0:
+                if compliance_breaks <= 1:
                     punishment_text = "30 pushups"
-                elif compliance_breaks == 1:
-                    punishment_text = "50 burpees"
                 elif compliance_breaks == 2:
-                    punishment_text = "100 burpees"
+                    punishment_text = "50 burpees"
                 elif compliance_breaks == 3:
-                    punishment_text = "150 burpees"
+                    punishment_text = "100 burpees"
                 elif compliance_breaks == 4:
+                    punishment_text = "150 burpees"
+                elif compliance_breaks == 5:
                     punishment_text = "200 burpees"
-                elif compliance_breaks <= 6:
+                elif compliance_breaks <= 7:
                     punishment_text = "300 burpees"
                 else:
                     punishment_text = "400 burpees — unbroken if possible"
@@ -655,12 +658,14 @@ Respond with ONLY the punishment workout description. Maximum 120 characters."""
             user = self.bot.get_user(int(discord_id))
             if user:
                 # Build missed days counter message
-                if compliance_breaks == 0:
-                    streak_msg = "🆕 This is your first miss."
-                elif compliance_breaks == 1:
+                if compliance_breaks <= 1:
+                    streak_msg = "🆕 This is your first miss in the last 30 days."
+                elif compliance_breaks == 2:
                     streak_msg = "⚠️ You've missed **2 days** in the last 30 days."
+                elif compliance_breaks <= 4:
+                    streak_msg = f"⚠️ You've missed **{compliance_breaks} days** in the last 30 days."
                 else:
-                    streak_msg = f"🔥 You've missed **{compliance_breaks + 1} days** in the last 30 days. Time to turn it around!"
+                    streak_msg = f"🔥 You've missed **{compliance_breaks} days** in the last 30 days. Time to turn it around!"
 
                 await user.send(
                     "😈 You missed your goal yesterday.\n\n"
@@ -1132,14 +1137,14 @@ Make it feel fresh, authentic, and pumped up. No generic quotes."""
             mention = f"<@{discord_id}>"
 
             # Build streak message
-            if compliance_breaks == 0:
+            if compliance_breaks <= 1:
                 streak_indicator = "🆕 First miss"
-            elif compliance_breaks == 1:
+            elif compliance_breaks == 2:
                 streak_indicator = "⚠️ 2 misses in last 30 days"
-            elif compliance_breaks <= 3:
-                streak_indicator = f"🔥 {compliance_breaks + 1} misses in last 30 days"
+            elif compliance_breaks <= 4:
+                streak_indicator = f"⚠️ {compliance_breaks} misses in last 30 days"
             else:
-                streak_indicator = f"💀 {compliance_breaks + 1} misses in last 30 days - Getting serious!"
+                streak_indicator = f"🔥 {compliance_breaks} misses in last 30 days - Getting serious!"
 
             message = (
                 f"😈 **Punishment Assigned**\n\n"
