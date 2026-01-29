@@ -1258,7 +1258,7 @@ Make it feel fresh, authentic, and pumped up. No generic quotes."""
                     if state["state"] == "approved":
                         result_emoji = "🎉"
                         result_text = f"{result_emoji} **APPROVED** - No logging required on {req.target_day.isoformat()}!"
-                        ping_text = "@everyone " if state["yes"] >= 3 else ""
+                        ping_text = "<@&1458306967016701974> " if state["yes"] >= 3 else ""
                     else:
                         result_emoji = "❌"
                         result_text = f"{result_emoji} **REJECTED** - Regular challenge requirements apply on {req.target_day.isoformat()}."
