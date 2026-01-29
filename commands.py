@@ -838,9 +838,10 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
                 ephemeral=True
             )
 
-            # Post results if approved or rejected
-            if state["state"] in ["approved", "rejected"] and req:
+            # Post results if approved or rejected (only if not already posted)
+            if state["state"] in ["approved", "rejected"] and req and not req.results_posted:
                 await _post_vote_results(request_id, req, state)
+                req.results_posted = True  # Mark as posted to prevent duplicates
 
         except Exception as e:
             await interaction.followup.send(f"❌ {e}", ephemeral=True)

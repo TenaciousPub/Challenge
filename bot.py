@@ -140,10 +140,11 @@ class ChallengeBot(discord.Client):
 
             # Check if vote reached threshold and auto-post results
             state = self.manager.compute_vote_state(request_id)
-            if state["state"] == "approved" and self.app_config.bot.dayoff_results_channel_id:
+            if state["state"] == "approved" and not req.results_posted and self.app_config.bot.dayoff_results_channel_id:
                 channel = self.get_channel(self.app_config.bot.dayoff_results_channel_id)
                 if channel:
                     await self._post_vote_results(channel, request_id, req, state)
+                    req.results_posted = True  # Mark as posted to prevent duplicates
 
         except RuntimeError as e:
             # Vote failed (ineligible, deadline passed, etc.)

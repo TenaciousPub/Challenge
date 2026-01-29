@@ -1224,8 +1224,19 @@ Make it feel fresh, authentic, and pumped up. No generic quotes."""
                 return
 
             now_utc = datetime.utcnow().replace(tzinfo=pytz.UTC)
+            today = datetime.now(pytz.UTC).date()
 
             for request_id, req in self.manager._day_off_requests.items():
+                # Skip if results already posted
+                if req.results_posted:
+                    continue
+
+                # Skip votes for dates that have already passed (stale votes)
+                if req.target_day < today:
+                    LOGGER.info(f"Skipping stale vote {request_id} for {req.target_day} (already passed)")
+                    req.results_posted = True  # Mark as processed to avoid checking again
+                    continue
+
                 # Check if deadline has passed
                 if now_utc <= req.deadline.astimezone(pytz.UTC):
                     continue  # Still open
@@ -1240,8 +1251,6 @@ Make it feel fresh, authentic, and pumped up. No generic quotes."""
                     state["state"] = "approved" if state["yes"] > state["no"] else "rejected"
 
                 # Post results if approved or rejected and we haven't posted yet
-                # To avoid duplicate posts, we can check if the request already has results posted
-                # For now, we'll log and post
                 if state["state"] in ["approved", "rejected"]:
                     # Build result message
                     requester_mention = f"<@{req.requested_by}>"
@@ -1270,8 +1279,11 @@ Make it feel fresh, authentic, and pumped up. No generic quotes."""
                     await channel.send(message)
                     LOGGER.info(f"Posted deadline-based vote results for {request_id}: {state['state']}")
 
-                    # Mark as processed (we could add a field to track this in the future)
-                    break  # Only process one per run to avoid spam
+                    # Mark as processed to prevent duplicate posts
+                    req.results_posted = True
+
+                    # Only process one per run to avoid spam
+                    break
 
         except Exception as e:
             LOGGER.error(f"Failed to check vote deadlines: {e}")
