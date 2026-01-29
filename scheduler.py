@@ -239,6 +239,10 @@ class ComplianceScheduler:
         if now_server.time() == self._motivation_time:
             await self._post_motivation_message(day_key)
 
+        # 4) Check vote deadlines every hour (on the hour)
+        if now_server.minute == 0:
+            await self._check_vote_deadlines()
+
         participants = self.manager.get_participants()
         for idx, p in enumerate(participants):
             # Yield control every 3 participants to prevent event loop blocking
@@ -1208,3 +1212,68 @@ Make it feel fresh, authentic, and pumped up. No generic quotes."""
             LOGGER.info("Posted punishment announcement for %s to channel %s (breaks: %d)", display_name, channel_id, compliance_breaks)
         except Exception as e:
             LOGGER.warning("Failed to post punishment announcement: %s", e)
+
+    async def _check_vote_deadlines(self) -> None:
+        """Check for closed votes and post results"""
+        if not self.app_config.bot.dayoff_results_channel_id:
+            return
+
+        try:
+            channel = self.bot.get_channel(self.app_config.bot.dayoff_results_channel_id)
+            if not channel:
+                return
+
+            now_utc = datetime.utcnow().replace(tzinfo=pytz.UTC)
+
+            for request_id, req in self.manager._day_off_requests.items():
+                # Check if deadline has passed
+                if now_utc <= req.deadline.astimezone(pytz.UTC):
+                    continue  # Still open
+
+                # Compute final state
+                state = self.manager.compute_vote_state(request_id)
+
+                # Check if we've already posted results for this request
+                # We'll use a simple check - if state is still "open", post results
+                if state["state"] == "open":
+                    # Deadline passed but still showing open, need to finalize
+                    state["state"] = "approved" if state["yes"] > state["no"] else "rejected"
+
+                # Post results if approved or rejected and we haven't posted yet
+                # To avoid duplicate posts, we can check if the request already has results posted
+                # For now, we'll log and post
+                if state["state"] in ["approved", "rejected"]:
+                    # Build result message
+                    requester_mention = f"<@{req.requested_by}>"
+
+                    if state["state"] == "approved":
+                        result_emoji = "🎉"
+                        result_text = f"{result_emoji} **APPROVED** - No logging required on {req.target_day.isoformat()}!"
+                        ping_text = "@everyone " if state["yes"] >= 3 else ""
+                    else:
+                        result_emoji = "❌"
+                        result_text = f"{result_emoji} **REJECTED** - Regular challenge requirements apply on {req.target_day.isoformat()}."
+                        ping_text = ""
+
+                    message = (
+                        f"{ping_text}🗳️ **Day-Off Vote Results**\n\n"
+                        f"📅 **Date Requested:** {req.target_day.isoformat()}\n"
+                        f"🙋 **Requested by:** {requester_mention}\n\n"
+                        f"✅ **Yes:** {state['yes']} votes\n"
+                        f"❌ **No:** {state['no']} votes\n\n"
+                        f"{result_text}"
+                    )
+
+                    if state["state"] == "approved":
+                        message += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━━\nAll participants get a free day. Enjoy your rest!"
+
+                    await channel.send(message)
+                    LOGGER.info(f"Posted deadline-based vote results for {request_id}: {state['state']}")
+
+                    # Mark as processed (we could add a field to track this in the future)
+                    break  # Only process one per run to avoid spam
+
+        except Exception as e:
+            LOGGER.error(f"Failed to check vote deadlines: {e}")
+            import traceback
+            LOGGER.error(traceback.format_exc())

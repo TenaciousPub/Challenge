@@ -16,6 +16,7 @@ class BotConfig:
     leaderboards_channel_id: Optional[int] = None
     motivation_channel_id: Optional[int] = None
     punishment_channel_id: Optional[int] = None
+    dayoff_results_channel_id: Optional[int] = None
 
 
 @dataclass(slots=True)
@@ -137,6 +138,7 @@ def load_config() -> AppConfig:
             leaderboards_channel_id=_opt_int("LEADERBOARDS_CHANNEL_ID"),
             motivation_channel_id=_opt_int("MOTIVATION_CHANNEL_ID"),
             punishment_channel_id=_opt_int("PUNISHMENT_CHANNEL_ID"),
+            dayoff_results_channel_id=_opt_int("DAYOFF_RESULTS_CHANNEL_ID"),
         ),
         sheets=SheetsConfig(spreadsheet_id=spreadsheet_id, credentials_path=Path(creds_path)),
         challenge=challenge,

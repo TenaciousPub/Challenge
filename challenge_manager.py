@@ -448,16 +448,28 @@ class ChallengeManager:
         if not dv:
             raise RuntimeError("You are not eligible to vote on this request")
 
-        if dv.vote in {"yes", "no"}:
-            raise RuntimeError("You already voted")
+        # Check if already voted (more strict check)
+        if dv.vote and dv.vote in {"yes", "no"}:
+            raise RuntimeError(f"You already voted {dv.vote}")
 
+        # Update vote
         dv.vote = vote
         dv.voted_at = datetime.now(tz=pytz.UTC)
 
+        # Persist to sheets BEFORE declaring success
         try:
             self.sheets.update_day_off_vote(dv, target_day=req.target_day, reason=req.reason)
         except Exception as e:
-            LOGGER.warning("update_day_off_vote failed: %s", e)
+            # Revert the in-memory change if sheet update fails
+            dv.vote = "pending"
+            dv.voted_at = None
+            LOGGER.error(f"Failed to persist vote, reverting: {e}")
+            raise RuntimeError(f"Failed to save vote: {e}")
+
+        # Check if vote should auto-close
+        state = self.compute_vote_state(request_id)
+        if state["state"] == "approved":
+            LOGGER.info(f"Vote {request_id} reached approval threshold")
 
     def is_request_approved(self, request_id: str) -> bool:
         state = self.compute_vote_state(request_id)

@@ -223,6 +223,15 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
             else:
                 d = datetime.now(tz).date()
 
+            # Check if this date is an approved day-off
+            if manager.has_approved_dayoff(participant_id=p.discord_id, local_day=d):
+                await interaction.followup.send(
+                    f"🎉 **{d.isoformat()} is an approved day-off!**\n\n"
+                    "No logging needed. Enjoy your rest! 😊",
+                    ephemeral=True
+                )
+                return
+
             # Resolve challenge ID or type
             if challenge_id:
                 cid = _resolve_challenge_reference(p.discord_id, challenge_id)
@@ -722,14 +731,74 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
                 reason=reason,
                 deadline=deadline,
             )
+
+            # Post to public channel if configured
+            if app_config.bot.dayoff_results_channel_id:
+                try:
+                    channel = bot.get_channel(app_config.bot.dayoff_results_channel_id)
+                    if channel:
+                        reason_text = f"\n**Reason:** {reason}" if reason else ""
+                        deadline_str = deadline.astimezone(pytz.timezone(app_config.challenge.default_timezone)).strftime("%I:%M %p %Z")
+
+                        await channel.send(
+                            f"🗳️ **Day-Off Vote Started**\n\n"
+                            f"📅 **Date Requested:** {d.isoformat()}\n"
+                            f"🙋 **Requested by:** <@{p.discord_id}>{reason_text}\n"
+                            f"⏰ **Voting Deadline:** {deadline_str}\n"
+                            f"🆔 **Request ID:** `{req.request_id}`\n\n"
+                            f"**To vote, use:** `/dayoff vote {req.request_id} yes` or `no`"
+                        )
+                except Exception as e:
+                    LOGGER.error(f"Failed to post day-off request to channel: {e}")
+
             await interaction.followup.send(
                 f"✅ Day-off request created for **{d.isoformat()}**.\n"
                 f"Request ID: `{req.request_id}`\n"
-                "Ask participants to vote with **/dayoff vote**.",
+                f"Posted to voting channel for all participants to vote.",
                 ephemeral=True,
             )
         except Exception as e:
             await interaction.followup.send(f"❌ {e}", ephemeral=True)
+
+    async def _post_vote_results(request_id: str, req, state: dict) -> None:
+        """Post vote results to the dayoff results channel"""
+        if not app_config.bot.dayoff_results_channel_id:
+            return
+
+        try:
+            channel = bot.get_channel(app_config.bot.dayoff_results_channel_id)
+            if not channel:
+                return
+
+            # Find the requester's display name
+            requester_mention = f"<@{req.requested_by}>"
+
+            # Build result message
+            if state["state"] == "approved":
+                result_emoji = "🎉"
+                result_text = f"{result_emoji} **APPROVED** - No logging required on {req.target_day.isoformat()}!"
+                ping_text = "@everyone " if state["yes"] >= 3 else ""
+            else:
+                result_emoji = "❌"
+                result_text = f"{result_emoji} **REJECTED** - Regular challenge requirements apply on {req.target_day.isoformat()}."
+                ping_text = ""
+
+            message = (
+                f"{ping_text}🗳️ **Day-Off Vote Results**\n\n"
+                f"📅 **Date Requested:** {req.target_day.isoformat()}\n"
+                f"🙋 **Requested by:** {requester_mention}\n\n"
+                f"✅ **Yes:** {state['yes']} votes\n"
+                f"❌ **No:** {state['no']} votes\n\n"
+                f"{result_text}"
+            )
+
+            if state["state"] == "approved":
+                message += "\n\n━━━━━━━━━━━━━━━━━━━━━━━━━\nAll participants get a free day. Enjoy your rest!"
+
+            await channel.send(message)
+            LOGGER.info(f"Posted vote results for {request_id}: {state['state']}")
+        except Exception as e:
+            LOGGER.error(f"Failed to post vote results: {e}")
 
     @dayoff_group.command(name="vote", description="Vote on a day-off request")
     @app_commands.describe(request_id="Request ID", vote="yes or no")
@@ -740,8 +809,27 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
             if not p:
                 await interaction.followup.send("❌ Use **/join start** first.", ephemeral=True)
                 return
+
+            # Register the vote
             manager.register_vote(request_id=request_id, voter_id=p.discord_id, vote=vote)
-            await interaction.followup.send("✅ Vote recorded.", ephemeral=True)
+
+            # Check if vote reached threshold
+            state = manager.compute_vote_state(request_id)
+            req = manager._day_off_requests.get(request_id)
+
+            # Send confirmation
+            await interaction.followup.send(
+                f"✅ Vote recorded: **{vote}**\n\n"
+                f"**Current Status:**\n"
+                f"✅ Yes: {state['yes']} | ❌ No: {state['no']}\n"
+                f"**State:** {state['state']}",
+                ephemeral=True
+            )
+
+            # Post results if approved or rejected
+            if state["state"] in ["approved", "rejected"] and req:
+                await _post_vote_results(request_id, req, state)
+
         except Exception as e:
             await interaction.followup.send(f"❌ {e}", ephemeral=True)
 
