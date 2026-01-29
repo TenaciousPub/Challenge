@@ -409,46 +409,96 @@ class ComplianceScheduler:
 
     def _count_recent_compliance_breaks(self, discord_id: str, reference_date: date, days: int = 30) -> int:
         """
-        Count how many days in the last N days the participant was non-compliant.
-        Includes the reference_date in the count (typically yesterday when punishing).
+        Count how many days in the last N days the participant was penalized/non-compliant.
+        Uses DailyLog penalized field for accurate counting.
         """
         try:
-            breaks = 0
+            # Count from DailyLog sheet - more reliable than evaluate_multi_compliance
+            penalized_count = 0
 
-            for i in range(days):
-                check_date = reference_date - timedelta(days=i)
+            try:
+                # Fetch all daily logs for this participant
+                from .sheets import _safe_get_all_records, DAILY_LOG_SHEET
+                ws = self.manager.sheets._worksheet(DAILY_LOG_SHEET)
+                headers = ws.row_values(1)
 
-                # Skip if before challenge start date
-                start_str = getattr(self.app_config.challenge, "start_date", None)
-                if start_str:
+                if "challenge_id" in headers:
+                    expected_headers = ["date","discord_id","pushup_count","workout_bonus","penalized","notes","logged_at","challenge_id"]
+                else:
+                    expected_headers = ["date","discord_id","pushup_count","workout_bonus","penalized","notes","logged_at"]
+
+                rows = _safe_get_all_records(ws, expected_headers=expected_headers)
+
+                # Count unique penalized dates in the last 30 days
+                penalized_dates = set()
+                for row in rows:
+                    if str(row.get("discord_id", "")).strip() != str(discord_id).strip():
+                        continue
+
+                    date_str = str(row.get("date", "")).strip()
+                    if not date_str:
+                        continue
+
                     try:
-                        start_day = date.fromisoformat(start_str)
-                        if check_date < start_day:
+                        log_date = date.fromisoformat(date_str)
+                    except:
+                        continue
+
+                    # Check if within our date range
+                    days_ago = (reference_date - log_date).days
+                    if days_ago < 0 or days_ago >= days:
+                        continue
+
+                    # Check if penalized
+                    penalized = str(row.get("penalized", "")).strip().lower() in ("true", "1", "yes")
+                    if penalized:
+                        penalized_dates.add(log_date)
+
+                penalized_count = len(penalized_dates)
+                LOGGER.info(f"Found {penalized_count} penalized days for {discord_id} in last {days} days from DailyLog")
+
+            except Exception as e:
+                LOGGER.warning(f"Failed to count from DailyLog, falling back to compliance check: {e}")
+                # Fallback to old method
+                penalized_count = 0
+                for i in range(days):
+                    check_date = reference_date - timedelta(days=i)
+
+                    # Skip if before challenge start date
+                    start_str = getattr(self.app_config.challenge, "start_date", None)
+                    if start_str:
+                        try:
+                            start_day = date.fromisoformat(start_str)
+                            if check_date < start_day:
+                                continue
+                        except Exception:
+                            pass
+
+                    # Check if they had an approved day off
+                    try:
+                        if self.manager.has_approved_dayoff(participant_id=discord_id, local_day=check_date):
                             continue
                     except Exception:
                         pass
 
-                # Check if they had an approved day off
-                try:
-                    if self.manager.has_approved_dayoff(participant_id=discord_id, local_day=check_date):
+                    # Evaluate compliance for that day
+                    try:
+                        status = self.manager.evaluate_multi_compliance(check_date).get(str(discord_id))
+                        if status and not bool(status.get("compliant")):
+                            penalized_count += 1
+                            LOGGER.debug(f"Found non-compliant day for {discord_id} on {check_date}")
+                    except Exception as e:
+                        LOGGER.debug(f"Failed to check compliance for {discord_id} on {check_date}: {e}")
                         continue
-                except Exception:
-                    pass
 
-                # Evaluate compliance for that day
-                try:
-                    status = self.manager.evaluate_multi_compliance(check_date).get(str(discord_id))
-                    if status and not bool(status.get("compliant")):
-                        breaks += 1
-                        LOGGER.debug(f"Found non-compliant day for {discord_id} on {check_date}")
-                except Exception as e:
-                    LOGGER.debug(f"Failed to check compliance for {discord_id} on {check_date}: {e}")
-                    continue
+            # Include the current miss (reference_date) if not already counted
+            return penalized_count + 1
 
-            return breaks
         except Exception as e:
-            LOGGER.warning(f"Failed to count compliance breaks for {discord_id}: {e}")
-            return 0
+            LOGGER.error(f"Failed to count compliance breaks for {discord_id}: {e}")
+            import traceback
+            LOGGER.error(traceback.format_exc())
+            return 1  # Default to 1 (current miss only)
 
     async def _generate_ai_punishment(self, compliance_breaks: int, is_disabled: bool, display_name: str) -> Optional[str]:
         """Generate an AI punishment based on compliance history and accessibility needs."""
@@ -604,9 +654,9 @@ Respond with ONLY the punishment workout description. Maximum 120 characters."""
             summary_lines.append(f"• {m.get('type')} — need {m.get('need')} {m.get('unit')}")
         summary = "\n".join(summary_lines) if summary_lines else "• You missed your goal."
 
-        # Count recent compliance breaks (last 30 days, including yesterday)
+        # Count recent compliance breaks (last 30 days, including current miss)
         compliance_breaks = self._count_recent_compliance_breaks(discord_id, reference_date=yday, days=30)
-        LOGGER.info(f"{display_name} has {compliance_breaks} compliance breaks in the last 30 days (including {yday.isoformat()})")
+        LOGGER.info(f"{display_name} - Total misses: {compliance_breaks} (including today's miss on {yday.isoformat()})")
 
         # Get participant info for accessibility needs
         p = self.manager.get_participant_by_id(discord_id)
