@@ -84,3 +84,4 @@ class DayOffRequest:
     deadline: datetime
     votes: Dict[str, DayOffVote]
     reason: Optional[str] = None
+    message_id: Optional[int] = None  # Discord message ID for reaction voting

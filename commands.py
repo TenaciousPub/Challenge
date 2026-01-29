@@ -740,14 +740,26 @@ def register_command_groups(bot: discord.Client, manager: ChallengeManager, app_
                         reason_text = f"\n**Reason:** {reason}" if reason else ""
                         deadline_str = deadline.astimezone(pytz.timezone(app_config.challenge.default_timezone)).strftime("%I:%M %p %Z")
 
-                        await channel.send(
+                        # Post the vote message
+                        message = await channel.send(
                             f"🗳️ **Day-Off Vote Started**\n\n"
                             f"📅 **Date Requested:** {d.isoformat()}\n"
                             f"🙋 **Requested by:** <@{p.discord_id}>{reason_text}\n"
                             f"⏰ **Voting Deadline:** {deadline_str}\n"
                             f"🆔 **Request ID:** `{req.request_id}`\n\n"
-                            f"**To vote, use:** `/dayoff vote {req.request_id} yes` or `no`"
+                            f"**React to vote:**\n"
+                            f"✅ = Yes | ❌ = No\n"
+                            f"_(Or use `/dayoff vote {req.request_id} yes/no`)_"
                         )
+
+                        # Add reaction options
+                        await message.add_reaction("✅")
+                        await message.add_reaction("❌")
+
+                        # Store message ID in the request
+                        req.message_id = message.id
+                        LOGGER.info(f"Created vote message {message.id} for request {req.request_id}")
+
                 except Exception as e:
                     LOGGER.error(f"Failed to post day-off request to channel: {e}")
 
