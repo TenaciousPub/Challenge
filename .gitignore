@@ -1,3 +1,30 @@
+# Environment and secrets
 .env
+.env.*
+!.env.example
+*.json
+credentials*.json
+# Allow the specific credentials file for Railway deployment
+!challenge-473307-1aad4c0c18d3.json
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
